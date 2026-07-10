@@ -17,6 +17,14 @@ import plotly.graph_objects as go
 import plotly.io as pio
 from plotly.subplots import make_subplots
 
+# matplotlib 用于服务器端 PNG 导出（不依赖浏览器/Chrome）
+import matplotlib
+matplotlib.use("Agg")  # 非交互式后端，适合服务器环境
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from matplotlib.patches import Patch
+from matplotlib.lines import Line2D
+
 
 # ==================== 数据加载与解析模块 ====================
 
@@ -1244,64 +1252,145 @@ def render_milestones_table(milestones):
 
 # ==================== 导出功能模块 ====================
 
-def export_gantt_png(fig):
+def export_combined_png_matplotlib(tasks_df, milestones, section_filter=None, show_milestones=True, progress_bar=None):
     """
-    将甘特图导出为PNG图片（Plotly 6.x内置渲染器，无需额外依赖）
-    """
-    try:
-        png_bytes = pio.to_image(
-            fig,
-            format="png",
-            width=1800,
-            height=1200,
-            scale=2
-        )
-        return png_bytes
-    except Exception as e:
-        st.error(f"PNG导出失败：{str(e)}")
-        return None
+    使用 matplotlib 纯 Python 绘制甘特图和资源曲线，保存为 PNG。
+    不依赖 Chrome/Kaleido/Pillow，适合 Streamlit Cloud 等服务器环境。
 
+    参数:
+        tasks_df: 任务DataFrame
+        milestones: 里程碑列表
+        section_filter: 分部工程筛选列表
+        show_milestones: 是否显示里程碑
+        progress_bar: Streamlit progress bar
 
-def export_combined_png(fig_gantt, fig_manpower, progress_bar=None):
-    """
-    将甘特图和资源曲线合并为一个PNG图片（上下排列）
-    progress_bar: Streamlit progress bar 用于显示进度
+    返回:
+        PNG 图片 bytes
     """
     def update_progress(step, total, msg):
         if progress_bar:
             progress_bar.progress(step / total, text=msg)
 
     try:
-        update_progress(1, 3, "正在渲染甘特图...")
-        png1_bytes = pio.to_image(fig_gantt, format="png", width=1400, height=1000, scale=2)
-        
-        update_progress(2, 3, "正在渲染资源曲线...")
-        png2_bytes = pio.to_image(fig_manpower, format="png", width=1400, height=500, scale=2)
-        
-        update_progress(3, 3, "正在合并图片...")
-        
-        from PIL import Image
-        from io import BytesIO
-        
-        img1 = Image.open(BytesIO(png1_bytes))
-        img2 = Image.open(BytesIO(png2_bytes))
-        
-        total_height = img1.height + img2.height + 20
-        combined_img = Image.new('RGB', (img1.width, total_height), 'white')
-        
-        combined_img.paste(img1, (0, 0))
-        combined_img.paste(img2, (0, img1.height + 20))
-        
-        buf = BytesIO()
-        combined_img.save(buf, format='PNG', dpi=(300, 300))
-        
+        # 配置中文字体（跨平台兼容）
+        plt.rcParams["font.sans-serif"] = [
+            "Microsoft YaHei", "SimHei", "Noto Sans SC",
+            "WenQuanYi Micro Hei", "DejaVu Sans"
+        ]
+        plt.rcParams["axes.unicode_minus"] = False
+
+        update_progress(1, 3, "正在绘制甘特图...")
+
+        # 构建甘特图数据
+        rows_df = _build_gantt_data(tasks_df, section_filter=section_filter)
+        if rows_df is None or len(rows_df) == 0:
+            st.error("无数据可导出")
+            return None
+
+        fig, (ax_gantt, ax_resource) = plt.subplots(
+            2, 1, figsize=(18, max(10, len(rows_df) * 0.4 + 4)),
+            gridspec_kw={'height_ratios': [3, 1]}
+        )
+
+        # ========== 甘特图 ==========
+        y_positions = list(range(len(rows_df)))
+        y_labels = []
+        date_min = rows_df["Start"].min()
+        date_max = rows_df["Finish"].max()
+
+        for idx, (_, row) in enumerate(rows_df.iterrows()):
+            start = row["Start"]
+            finish = row["Finish"]
+            duration = (finish - start).days + 1
+            color = row["bar_color"]
+
+            # 绘制横道
+            ax_gantt.barh(idx, duration, left=mdates.date2num(start), height=0.5,
+                          color=color, edgecolor="#333", linewidth=0.5)
+
+            # Y轴标签
+            start_str = start.strftime("%Y-%m-%d")
+            finish_str = finish.strftime("%Y-%m-%d")
+            if row["row_type"] == "section":
+                label = f"{row['label']}  {start_str}~{finish_str}  {duration}d"
+            else:
+                label = f"{row['label']}  {start_str}~{finish_str}  {duration}d"
+            y_labels.append(label)
+
+            # 起止日期标注
+            ax_gantt.text(mdates.date2num(start) - 0.5, idx, start.strftime("%m/%d"),
+                          ha="right", va="center", fontsize=6, color="#555")
+            ax_gantt.text(mdates.date2num(finish) + 0.5, idx, finish.strftime("%m/%d"),
+                          ha="left", va="center", fontsize=6, color="#555")
+
+        # Y轴
+        ax_gantt.set_yticks(y_positions)
+        ax_gantt.set_yticklabels(y_labels, fontsize=8)
+        ax_gantt.invert_yaxis()
+
+        # X轴日期
+        ax_gantt.xaxis.set_major_formatter(mdates.DateFormatter("%Y年%m月%d日"))
+        ax_gantt.xaxis.set_major_locator(mdates.MonthLocator())
+        plt.setp(ax_gantt.xaxis.get_majorticklabels(), rotation=30, ha="right", fontsize=8)
+
+        ax_gantt.set_xlim(mdates.date2num(date_min) - 3, mdates.date2num(date_max) + 3)
+        ax_gantt.set_title("施工进度甘特图", fontsize=14, fontweight="bold", pad=15)
+        ax_gantt.grid(axis="x", alpha=0.3, linestyle="-")
+        ax_gantt.set_axisbelow(True)
+
+        # 里程碑
+        if show_milestones and milestones:
+            for milestone in milestones:
+                md = pd.Timestamp(milestone["date"])
+                ax_gantt.plot(mdates.date2num(md), 0, "D",
+                              color="#f39c12", markersize=8,
+                              markeredgecolor="#d68910", markeredgewidth=1.5)
+                ax_gantt.axvline(x=mdates.date2num(md), color="#f39c12",
+                                 linestyle="--", alpha=0.4, linewidth=1)
+
+        # 图例
+        legend_elements = [
+            Patch(facecolor="#000000", edgecolor="#333", label="分部大类"),
+            Patch(facecolor="#e74c3c", edgecolor="#333", label="分部小类"),
+        ]
+        if show_milestones and milestones:
+            legend_elements.append(
+                Line2D([0], [0], marker="D", color="w", markerfacecolor="#f39c12",
+                       markeredgecolor="#d68910", markersize=8, label="里程碑")
+            )
+        ax_gantt.legend(handles=legend_elements, loc="upper right", fontsize=9)
+
+        update_progress(2, 3, "正在绘制资源曲线...")
+
+        # ========== 资源曲线 ==========
+        date_range, daily_manpower, _ = calculate_daily_resources(tasks_df)
+
+        if len(date_range) > 0:
+            x_num = [mdates.date2num(d) for d in date_range]
+            ax_resource.fill_between(x_num, daily_manpower, alpha=0.3, color="#27ae60")
+            ax_resource.plot(x_num, daily_manpower, color="#27ae60", linewidth=1.5, label="人力需求")
+
+            ax_resource.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
+            ax_resource.xaxis.set_major_locator(mdates.MonthLocator())
+            plt.setp(ax_resource.xaxis.get_majorticklabels(), rotation=30, ha="right", fontsize=8)
+
+            ax_resource.set_title("资源负荷曲线（人力）", fontsize=12, pad=10)
+            ax_resource.set_xlabel("日期", fontsize=10)
+            ax_resource.set_ylabel("人力（人）", fontsize=10)
+            ax_resource.grid(axis="y", alpha=0.3, linestyle="-")
+            ax_resource.set_axisbelow(True)
+            ax_resource.legend(fontsize=9)
+
+        update_progress(3, 3, "正在保存...")
+
+        plt.tight_layout()
+
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=150, bbox_inches="tight", facecolor="white")
+        plt.close(fig)
+
         return buf.getvalue()
 
-    except ImportError:
-        if progress_bar:
-            progress_bar.progress(0, text="失败：需要安装Pillow")
-        st.error("PNG合并失败：请安装 Pillow 包 (`pip install pillow`)")
-        return None
     except Exception as e:
         if progress_bar:
             progress_bar.progress(0, text=f"失败：{str(e)}")
@@ -1816,7 +1905,12 @@ def main():
                             tasks_df[tasks_df["section_code"].isin(selected_sections)].copy()
                             if selected_sections else tasks_df.copy()
                         )
-                        result = export_combined_png(fig_gantt, fig_manpower_for_export, progress_bar)
+                        result = export_combined_png_matplotlib(
+                            tasks_df, milestones,
+                            section_filter=selected_sections if selected_sections else None,
+                            show_milestones=show_milestones,
+                            progress_bar=progress_bar
+                        )
                         if result:
                             st.session_state[img_key] = result
                             st.success("PNG生成成功！")
