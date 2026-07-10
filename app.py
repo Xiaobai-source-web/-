@@ -7,8 +7,9 @@
 import json
 import os
 import io
+import functools
 from datetime import datetime
-    
+
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -312,9 +313,10 @@ def tasks_to_dataframe(tasks, critical_task_ids):
     return df
 
 
+@st.cache_data
 def calculate_daily_resources(tasks_df):
     """
-    计算每日资源需求明细（向量化实现，避免双重循环）
+    计算每日资源需求明细（已缓存，避免重复计算）。
     返回：日期列表、总人数列表、每日资源明细字符串列表
     """
     start_date = tasks_df["start_date"].min()
@@ -374,9 +376,10 @@ def _format_short_date(dt):
         return str(dt)
 
 
+@st.cache_data
 def _build_gantt_data(tasks_df, section_filter=None):
     """
-    构造甘特图绘图数据。
+    构造甘特图绘图数据（已缓存，避免重复计算）。
     返回 DataFrame，每行含 label / Start / Finish / duration / row_type / resources / bar_color 等。
     """
     # 1. 筛选
@@ -447,14 +450,20 @@ def _build_gantt_data(tasks_df, section_filter=None):
     return pd.DataFrame(ordered_rows)
 
 
+@functools.lru_cache(maxsize=512)
+def _build_resource_hover_text_cached(resources_tuple):
+    """缓存版本：把 resources 元组格式化为 hover 文本"""
+    if not resources_tuple:
+        return "无资源配置"
+    lines = [f"  {k}: {v}" for k, v in resources_tuple]
+    return "<br>".join(lines)
+
+
 def _build_resource_hover_text(resources):
-    """把 resources 字典格式化为 hover 文本"""
+    """把 resources 字典格式化为 hover 文本（带缓存）"""
     if not resources or not isinstance(resources, dict):
         return "无资源配置"
-    lines = []
-    for k, v in sorted(resources.items()):
-        lines.append(f"  {k}: {v}")
-    return "<br>".join(lines)
+    return _build_resource_hover_text_cached(tuple(sorted(resources.items())))
 
 
 def create_gantt_chart(tasks_df, milestones, section_filter=None, show_milestones=True):
@@ -512,17 +521,32 @@ def create_gantt_chart(tasks_df, milestones, section_filter=None, show_milestone
     all_dates = pd.date_range(start=date_min, end=date_max, freq='D')
     red_tasks_list = red_rows.to_dict('records')
 
+    # 优化：预计算每个任务的hover文本，避免每天重复构建
+    task_hover_cache = {}
+    for t in red_tasks_list:
+        res_text = _build_resource_hover_text(t["resources"])
+        task_hover_cache[t["task_id"]] = (
+            f"<b>{t['task_id']} {t['task_name']}</b><br>"
+            f"工期：{t['duration']}天<br>"
+            f"资源配置：{res_text}"
+        )
+    
+    # 优化：使用日期区间展开，避免O(n*m)双重循环
+    date_to_hover = {}
+    for t in red_tasks_list:
+        task_dates = pd.date_range(start=t["Start"], end=t["Finish"], freq='D')
+        hover = task_hover_cache[t["task_id"]]
+        for d in task_dates:
+            d_key = d.strftime('%Y-%m-%d')
+            if d_key not in date_to_hover:
+                date_to_hover[d_key] = []
+            date_to_hover[d_key].append(hover)
+    
     daily_hover_texts = []
     for d in all_dates:
-        active_tasks = [t for t in red_tasks_list if t["Start"] <= d <= t["Finish"]]
-        if active_tasks:
-            lines = []
-            for t in active_tasks:
-                res_text = _build_resource_hover_text(t["resources"])
-                lines.append(f"<b>{t['task_id']} {t['task_name']}</b>")
-                lines.append(f"工期：{t['duration']}天")
-                lines.append(f"资源配置：{res_text}")
-            daily_hover_texts.append("<br>".join(lines))
+        d_key = d.strftime('%Y-%m-%d')
+        if d_key in date_to_hover:
+            daily_hover_texts.append("<br>".join(date_to_hover[d_key]))
         else:
             daily_hover_texts.append("当天无进行中的小类工序")
 
@@ -1220,14 +1244,33 @@ def render_milestones_table(milestones):
 
 # ==================== 导出功能模块 ====================
 
+def export_gantt_svg(fig):
+    """
+    将甘特图导出为SVG图片（跨平台通用，无需Chrome）
+    """
+    try:
+        svg_bytes = pio.to_image(
+            fig,
+            format="svg",
+            width=1800,
+            height=1200,
+        )
+        return svg_bytes
+    except Exception as e:
+        st.error(f"SVG导出失败：{str(e)}")
+        return None
+
+
 def export_gantt_png(fig):
     """
-    将甘特图导出为PNG图片（带重试机制，避免 kaleido 首次启动 Chrome 不稳定）
+    将甘特图导出为PNG图片（仅本地环境可用，需要Chrome）
+    优先尝试PNG，失败则回退到SVG
     """
     import time
     import os
+    import subprocess
 
-    # Streamlit Cloud 环境：设置 Chromium 路径
+    # Streamlit Cloud 环境：自动下载 Chromium
     if not os.environ.get("PLOTLY_KALEIDO_CHROMIUM_PATH"):
         for chromium_path in [
             "/usr/bin/chromium-browser",
@@ -1238,13 +1281,23 @@ def export_gantt_png(fig):
             if os.path.exists(chromium_path):
                 os.environ["PLOTLY_KALEIDO_CHROMIUM_PATH"] = chromium_path
                 break
+        else:
+            # 尝试使用 plotly_get_chrome 下载 Chromium
+            try:
+                subprocess.run(
+                    ["plotly_get_chrome"],
+                    check=True,
+                    capture_output=True,
+                    text=True
+                )
+            except Exception:
+                pass
 
     max_retries = 3
     last_error = None
 
     for attempt in range(max_retries):
         try:
-            # 用 pio.to_image，与独立测试脚本一致
             img_bytes = pio.to_image(
                 fig,
                 format="png",
@@ -1256,111 +1309,77 @@ def export_gantt_png(fig):
                 return img_bytes
         except Exception as e:
             last_error = e
-            # 等待 1 秒后重试（给 kaleido 重启浏览器的时间）
             time.sleep(1)
             continue
 
-    # 所有重试都失败，回退到 SVG
-    try:
-        svg_bytes = pio.to_image(
-            fig,
-            format="svg",
-            width=1800,
-            height=1200,
-        )
+    # 回退到 SVG
+    svg_bytes = export_gantt_svg(fig)
+    if svg_bytes:
         st.warning(
-            f"PNG 导出失败（{last_error}），已自动切换为 SVG 格式。"
+            "PNG 导出失败（需要Chrome），已自动切换为 SVG 格式。"
             "SVG 是矢量图，可直接用浏览器打开，也可右键另存为图片。"
         )
-        # 把 svg 存到 session_state 里，按钮里处理下载
         return ("svg", svg_bytes)
-    except Exception as e2:
-        st.error(f"导出失败：{str(last_error)}\nSVG 也失败：{str(e2)}")
-        return None
+    return None
 
 
-def export_combined_png(fig_gantt, fig_manpower, progress_bar=None):
+def export_combined_svg(fig_gantt, fig_manpower, progress_bar=None):
     """
-    将甘特图和资源曲线合并为一个PNG图片（上下排列）
+    将甘特图和资源曲线合并为一个SVG图片（上下排列，跨平台通用）
     progress_bar: Streamlit progress bar 用于显示进度
     """
-    import time
-    import os
-    from io import BytesIO
-
-    # Streamlit Cloud 环境：设置 Chromium 路径
-    if not os.environ.get("PLOTLY_KALEIDO_CHROMIUM_PATH"):
-        for chromium_path in [
-            "/usr/bin/chromium-browser",
-            "/usr/bin/chromium",
-            "/usr/bin/google-chrome",
-            "/usr/bin/google-chrome-stable",
-        ]:
-            if os.path.exists(chromium_path):
-                os.environ["PLOTLY_KALEIDO_CHROMIUM_PATH"] = chromium_path
-                break
+    import xml.etree.ElementTree as ET
+    import re
 
     def update_progress(step, total, msg):
         if progress_bar:
             progress_bar.progress(step / total, text=msg)
 
     try:
-        update_progress(1, 5, "正在渲染甘特图...")
-        img1_bytes = pio.to_image(
-            fig_gantt,
-            format="png",
-            scale=1,
-            width=1400,
-            height=1000,
-        )
+        update_progress(1, 3, "正在渲染甘特图...")
+        svg1_bytes = pio.to_image(fig_gantt, format="svg", width=1400, height=1000)
 
-        update_progress(3, 5, "正在渲染资源曲线...")
-        img2_bytes = pio.to_image(
-            fig_manpower,
-            format="png",
-            scale=1,
-            width=1400,
-            height=500,
-        )
+        update_progress(2, 3, "正在渲染资源曲线...")
+        svg2_bytes = pio.to_image(fig_manpower, format="svg", width=1400, height=500)
 
-        if not img1_bytes or not img2_bytes or len(img1_bytes) < 1000 or len(img2_bytes) < 1000:
-            raise ValueError("图片数据为空")
+        svg1_str = svg1_bytes.decode('utf-8')
+        svg2_str = svg2_bytes.decode('utf-8')
 
-        update_progress(4, 5, "正在合并图片...")
-        from PIL import Image
-        img1 = Image.open(BytesIO(img1_bytes))
-        img2 = Image.open(BytesIO(img2_bytes))
+        root1 = ET.fromstring(svg1_str)
+        root2 = ET.fromstring(svg2_str)
 
-        width = max(img1.width, img2.width)
-        total_height = img1.height + img2.height + 20
+        width = root1.get('width', '1400')
+        height1 = int(root1.get('height', '1000'))
+        height2 = int(root2.get('height', '500'))
+        total_height = height1 + height2 + 20
 
-        combined = Image.new('RGB', (width, total_height), (255, 255, 255))
-        combined.paste(img1, (0, 0))
-        combined.paste(img2, (0, img1.height + 20))
+        root1.set('height', str(total_height))
 
-        update_progress(5, 5, "正在保存...")
-        buf = BytesIO()
-        combined.save(buf, format='PNG')
+        group = ET.SubElement(root1, 'g')
+        group.set('transform', f'translate(0, {height1 + 20})')
 
-        if progress_bar:
-            progress_bar.progress(1.0, text="完成")
-        return buf.getvalue()
+        for child in root2:
+            group.append(child)
 
-    except ImportError:
-        update_progress(2, 5, "PIL未安装，仅导出甘特图...")
-        img_bytes = pio.to_image(
-            fig_gantt,
-            format="png",
-            scale=1,
-            width=1400,
-            height=1000,
-        )
-        return img_bytes
+        ET.register_namespace('', 'http://www.w3.org/2000/svg')
+        combined_svg = ET.tostring(root1, encoding='utf-8', method='xml')
+
+        update_progress(3, 3, "正在保存...")
+        return combined_svg
+
     except Exception as e:
         if progress_bar:
             progress_bar.progress(0, text=f"失败：{str(e)}")
         st.error(f"导出失败：{str(e)}")
         return None
+
+
+def export_combined_png(fig_gantt, fig_manpower, progress_bar=None):
+    """
+    将甘特图和资源曲线合并为一个图片（优先SVG，跨平台通用）
+    progress_bar: Streamlit progress bar 用于显示进度
+    """
+    return export_combined_svg(fig_gantt, fig_manpower, progress_bar)
 
 
 def export_tasks_csv(tasks_df):
@@ -1586,6 +1605,10 @@ def main():
                         st.rerun()
             
             # 显示当前页的文件列表
+            # 使用 session_state 跟踪当前展开的文件信息
+            if "expanded_file_info" not in st.session_state:
+                st.session_state.expanded_file_info = None
+            
             for hf in page_files:
                 col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
                 with col1:
@@ -1610,13 +1633,15 @@ def main():
                         except Exception as e:
                             st.error(f"加载失败：{str(e)}")
                 with col3:
-                    # 文件信息按钮
-                    if st.button("ℹ️", key=f"info_{hf['file_name']}", help="查看文件信息"):
-                        try:
-                            file_size = os.path.getsize(hf['file_path']) / 1024
-                            st.info(f"📄 {hf['file_name']}\n大小: {file_size:.1f} KB\n修改时间: {hf['upload_time']}")
-                        except Exception:
-                            pass
+                    # 文件信息按钮（点击展开/收起）
+                    is_expanded = st.session_state.expanded_file_info == hf['file_name']
+                    btn_label = "🔽 信息" if is_expanded else "ℹ️ 信息"
+                    if st.button(btn_label, key=f"info_{hf['file_name']}", help="点击查看/关闭文件信息"):
+                        if is_expanded:
+                            st.session_state.expanded_file_info = None
+                        else:
+                            st.session_state.expanded_file_info = hf['file_name']
+                        st.rerun()
                 with col4:
                     # 删除按钮
                     if st.button("🗑️", key=f"delete_{hf['file_name']}", type="secondary", help="删除历史文件"):
@@ -1624,10 +1649,28 @@ def main():
                             version_name = hf['project_name']
                             if version_name in st.session_state.data_versions:
                                 del st.session_state.data_versions[version_name]
+                            # 如果删除的是当前展开的文件，关闭信息面板
+                            if st.session_state.expanded_file_info == hf['file_name']:
+                                st.session_state.expanded_file_info = None
                             st.success(f"已删除：{hf['project_name']}")
                             st.rerun()
                         else:
                             st.error("删除失败")
+                
+                # 如果当前文件信息展开，横向显示文件详情
+                if st.session_state.expanded_file_info == hf['file_name']:
+                    try:
+                        file_size = os.path.getsize(hf['file_path']) / 1024
+                        info_col1, info_col2, info_col3 = st.columns(3)
+                        with info_col1:
+                            st.markdown(f"📄 **文件名**：`{hf['file_name']}`")
+                        with info_col2:
+                            st.markdown(f"📦 **大小**：{file_size:.1f} KB")
+                        with info_col3:
+                            st.markdown(f"🕐 **修改时间**：{hf['upload_time']}")
+                        st.markdown("---")
+                    except Exception:
+                        pass
         else:
             st.info("暂无历史文件，上传文件后将自动保存")
         
@@ -1795,13 +1838,22 @@ def main():
                             key=f"dl_{fmt}_{current_version}"
                         )
                     else:
-                        st.download_button(
-                            label="📥 下载(PNG)",
-                            data=result,
-                            file_name=f"{overview.get('project_name', '进度计划')}_进度图.png",
-                            mime="image/png",
-                            key=f"dl_png_{current_version}"
-                        )
+                        if isinstance(result, bytes) and result[:4] == b'<svg':
+                            st.download_button(
+                                label="📥 下载(SVG)",
+                                data=result,
+                                file_name=f"{overview.get('project_name', '进度计划')}_进度图.svg",
+                                mime="image/svg+xml",
+                                key=f"dl_svg_{current_version}"
+                            )
+                        else:
+                            st.download_button(
+                                label="📥 下载(PNG)",
+                                data=result,
+                                file_name=f"{overview.get('project_name', '进度计划')}_进度图.png",
+                                mime="image/png",
+                                key=f"dl_png_{current_version}"
+                            )
 
             with col_export2:
                 csv_data = export_tasks_csv(tasks_df)
