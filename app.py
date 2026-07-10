@@ -112,39 +112,48 @@ def get_local_json_files(directory):
 def get_history_directory():
     """
     获取历史文件存储目录路径
+    在Streamlit Cloud等只读文件系统上失败时返回None
     
     返回:
-        历史文件目录路径
+        历史文件目录路径，或None（如果无法创建）
     """
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    history_dir = os.path.join(base_dir, "uploaded_history")
-    if not os.path.exists(history_dir):
-        os.makedirs(history_dir)
-    return history_dir
+    try:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        history_dir = os.path.join(base_dir, "uploaded_history")
+        if not os.path.exists(history_dir):
+            os.makedirs(history_dir)
+        return history_dir
+    except Exception:
+        return None
 
 
 def save_uploaded_file_to_history(file_name, file_content):
     """
     将上传的文件保存到历史目录（按文件名唯一存储）
     同一文件名会被覆盖，不使用时间戳后缀
+    在只读文件系统上无法保存时返回None
     
     参数:
         file_name: 文件名
         file_content: 文件字节内容
         
     返回:
-        保存后的文件路径
+        保存后的文件路径，或None（如果无法保存）
     """
     history_dir = get_history_directory()
+    if history_dir is None:
+        return None
     # 统一使用原始文件名，不加时间戳
     if not file_name.endswith('.json'):
         file_name = file_name + '.json'
     save_path = os.path.join(history_dir, file_name)
     
-    with open(save_path, 'wb') as f:
-        f.write(file_content)
-    
-    return save_path
+    try:
+        with open(save_path, 'wb') as f:
+            f.write(file_content)
+        return save_path
+    except Exception:
+        return None
 
 
 def check_history_file_exists(file_name):
@@ -158,6 +167,8 @@ def check_history_file_exists(file_name):
         bool - 是否存在
     """
     history_dir = get_history_directory()
+    if history_dir is None:
+        return False
     if not file_name.endswith('.json'):
         file_name = file_name + '.json'
     save_path = os.path.join(history_dir, file_name)
@@ -167,35 +178,39 @@ def check_history_file_exists(file_name):
 def get_history_json_files():
     """
     获取历史目录下的所有JSON文件
+    在只读文件系统上返回空列表
     
     返回:
         [{'file_name', 'file_path', 'project_name', 'upload_time'}] 列表
     """
     history_dir = get_history_directory()
-    if not os.path.exists(history_dir):
+    if history_dir is None or not os.path.exists(history_dir):
         return []
     
     files = []
-    for f in os.listdir(history_dir):
-        if f.endswith('.json'):
-            file_path = os.path.join(history_dir, f)
-            # 获取文件修改时间
-            try:
-                mtime = os.path.getmtime(file_path)
-                upload_time = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
-            except Exception:
-                upload_time = "未知"
-            
-            project_name = f[:-5] if f.endswith('.json') else f  # 去掉.json后缀
-            files.append({
-                'file_name': f,
-                'file_path': file_path,
-                'project_name': project_name,
-                'upload_time': upload_time
-            })
-    
-    # 按文件名排序
-    files.sort(key=lambda x: x['file_name'])
+    try:
+        for f in os.listdir(history_dir):
+            if f.endswith('.json'):
+                file_path = os.path.join(history_dir, f)
+                # 获取文件修改时间
+                try:
+                    mtime = os.path.getmtime(file_path)
+                    upload_time = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
+                except Exception:
+                    upload_time = "未知"
+                
+                project_name = f[:-5] if f.endswith('.json') else f  # 去掉.json后缀
+                files.append({
+                    'file_name': f,
+                    'file_path': file_path,
+                    'project_name': project_name,
+                    'upload_time': upload_time
+                })
+        
+        # 按文件名排序
+        files.sort(key=lambda x: x['file_name'])
+    except Exception:
+        return []
     return files
 
 
