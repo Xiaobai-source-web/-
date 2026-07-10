@@ -1244,9 +1244,74 @@ def render_milestones_table(milestones):
 
 # ==================== 导出功能模块 ====================
 
+def export_gantt_png(fig):
+    """
+    将甘特图导出为PNG图片（Plotly 6.x内置渲染器，无需额外依赖）
+    """
+    try:
+        png_bytes = pio.to_image(
+            fig,
+            format="png",
+            width=1800,
+            height=1200,
+            scale=2
+        )
+        return png_bytes
+    except Exception as e:
+        st.error(f"PNG导出失败：{str(e)}")
+        return None
+
+
+def export_combined_png(fig_gantt, fig_manpower, progress_bar=None):
+    """
+    将甘特图和资源曲线合并为一个PNG图片（上下排列）
+    progress_bar: Streamlit progress bar 用于显示进度
+    """
+    def update_progress(step, total, msg):
+        if progress_bar:
+            progress_bar.progress(step / total, text=msg)
+
+    try:
+        update_progress(1, 3, "正在渲染甘特图...")
+        png1_bytes = pio.to_image(fig_gantt, format="png", width=1400, height=1000, scale=2)
+        
+        update_progress(2, 3, "正在渲染资源曲线...")
+        png2_bytes = pio.to_image(fig_manpower, format="png", width=1400, height=500, scale=2)
+        
+        update_progress(3, 3, "正在合并图片...")
+        
+        from PIL import Image
+        from io import BytesIO
+        
+        img1 = Image.open(BytesIO(png1_bytes))
+        img2 = Image.open(BytesIO(png2_bytes))
+        
+        total_height = img1.height + img2.height + 20
+        combined_img = Image.new('RGB', (img1.width, total_height), 'white')
+        
+        combined_img.paste(img1, (0, 0))
+        combined_img.paste(img2, (0, img1.height + 20))
+        
+        buf = BytesIO()
+        combined_img.save(buf, format='PNG', dpi=(300, 300))
+        
+        return buf.getvalue()
+
+    except ImportError:
+        if progress_bar:
+            progress_bar.progress(0, text="失败：需要安装Pillow")
+        st.error("PNG合并失败：请安装 Pillow 包 (`pip install pillow`)")
+        return None
+    except Exception as e:
+        if progress_bar:
+            progress_bar.progress(0, text=f"失败：{str(e)}")
+        st.error(f"PNG导出失败：{str(e)}")
+        return None
+
+
 def export_gantt_html(fig):
     """
-    将甘特图导出为HTML文件（无需Chrome，跨平台通用）
+    将甘特图导出为HTML文件（无需额外依赖，跨平台通用）
     """
     try:
         html_str = pio.to_html(
@@ -1264,7 +1329,7 @@ def export_gantt_html(fig):
 
 def export_combined_html(fig_gantt, fig_manpower, progress_bar=None):
     """
-    将甘特图和资源曲线合并为一个HTML文件（上下排列，跨平台通用，无需Chrome）
+    将甘特图和资源曲线合并为一个HTML文件（上下排列，跨平台通用）
     progress_bar: Streamlit progress bar 用于显示进度
     """
     def update_progress(step, total, msg):
@@ -1735,17 +1800,43 @@ def main():
                     key="manpower_chart"
                 )
             
-            # 3. 导出功能：合并两张图为一个HTML文件（无需Chrome）
+            # 3. 导出功能：支持PNG和HTML两种格式
             st.markdown("---")
-            col_export1, col_export2 = st.columns([1, 1])
+            col_export1, col_export2, col_export3 = st.columns([1, 1, 1])
 
             with col_export1:
-                img_key = f"img_{current_version}"
+                img_key = f"png_{current_version}"
                 if img_key not in st.session_state:
                     st.session_state[img_key] = None
 
                 if st.session_state[img_key] is None:
-                    if st.button("🖼️ 生成图片", key=f"btn_gen_img_{current_version}"):
+                    if st.button("🖼️ 生成PNG", key=f"btn_gen_png_{current_version}"):
+                        progress_bar = st.progress(0, text="正在准备...")
+                        fig_manpower_for_export = create_manpower_curve(
+                            tasks_df[tasks_df["section_code"].isin(selected_sections)].copy()
+                            if selected_sections else tasks_df.copy()
+                        )
+                        result = export_combined_png(fig_gantt, fig_manpower_for_export, progress_bar)
+                        if result:
+                            st.session_state[img_key] = result
+                            st.success("PNG生成成功！")
+                            st.rerun()
+                else:
+                    st.download_button(
+                        label="📥 下载(PNG)",
+                        data=st.session_state[img_key],
+                        file_name=f"{overview.get('project_name', '进度计划')}_进度图.png",
+                        mime="image/png",
+                        key=f"dl_png_{current_version}"
+                    )
+
+            with col_export2:
+                html_key = f"html_{current_version}"
+                if html_key not in st.session_state:
+                    st.session_state[html_key] = None
+
+                if st.session_state[html_key] is None:
+                    if st.button("🌐 生成HTML", key=f"btn_gen_html_{current_version}"):
                         progress_bar = st.progress(0, text="正在准备...")
                         fig_manpower_for_export = create_manpower_curve(
                             tasks_df[tasks_df["section_code"].isin(selected_sections)].copy()
@@ -1753,19 +1844,19 @@ def main():
                         )
                         result = export_combined_html(fig_gantt, fig_manpower_for_export, progress_bar)
                         if result:
-                            st.session_state[img_key] = result
-                            st.success("图片生成成功！")
+                            st.session_state[html_key] = result
+                            st.success("HTML生成成功！")
                             st.rerun()
                 else:
                     st.download_button(
                         label="📥 下载(HTML)",
-                        data=st.session_state[img_key],
+                        data=st.session_state[html_key],
                         file_name=f"{overview.get('project_name', '进度计划')}_进度图.html",
                         mime="text/html",
                         key=f"dl_html_{current_version}"
                     )
 
-            with col_export2:
+            with col_export3:
                 csv_data = export_tasks_csv(tasks_df)
                 st.download_button(
                     label="📊 导出工序表(CSV)",
@@ -1885,7 +1976,7 @@ def main():
         4. **筛选工序**：使用分部工程筛选器查看特定阶段的工序
         5. **资源详情**：在下方选择工序查看详细资源配置
         6. **版本对比**：加载多组数据后启用对比模式，查看工期偏差
-        7. **数据导出**：将甘特图导出为HTML（无需Chrome，跨平台通用），工序表导出为CSV
+        7. **数据导出**：将甘特图导出为PNG或HTML，工序表导出为CSV
         """)
         
         st.markdown("### 📋 JSON数据格式要求")
