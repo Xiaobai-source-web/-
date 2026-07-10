@@ -1225,6 +1225,19 @@ def export_gantt_png(fig):
     将甘特图导出为PNG图片（带重试机制，避免 kaleido 首次启动 Chrome 不稳定）
     """
     import time
+    import os
+
+    # Streamlit Cloud 环境：设置 Chromium 路径
+    if not os.environ.get("PLOTLY_KALEIDO_CHROMIUM_PATH"):
+        for chromium_path in [
+            "/usr/bin/chromium-browser",
+            "/usr/bin/chromium",
+            "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
+        ]:
+            if os.path.exists(chromium_path):
+                os.environ["PLOTLY_KALEIDO_CHROMIUM_PATH"] = chromium_path
+                break
 
     max_retries = 3
     last_error = None
@@ -1272,7 +1285,20 @@ def export_combined_png(fig_gantt, fig_manpower, progress_bar=None):
     progress_bar: Streamlit progress bar 用于显示进度
     """
     import time
+    import os
     from io import BytesIO
+
+    # Streamlit Cloud 环境：设置 Chromium 路径
+    if not os.environ.get("PLOTLY_KALEIDO_CHROMIUM_PATH"):
+        for chromium_path in [
+            "/usr/bin/chromium-browser",
+            "/usr/bin/chromium",
+            "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
+        ]:
+            if os.path.exists(chromium_path):
+                os.environ["PLOTLY_KALEIDO_CHROMIUM_PATH"] = chromium_path
+                break
 
     def update_progress(step, total, msg):
         if progress_bar:
