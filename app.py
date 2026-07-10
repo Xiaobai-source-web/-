@@ -1772,7 +1772,7 @@ def main():
                         key=f"dl_html_{current_version}"
                     )
 
-            with col_export3:
+            with col_export2:
                 csv_data = export_tasks_csv(tasks_df)
                 st.download_button(
                     label="📊 导出工序表(CSV)",
