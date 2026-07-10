@@ -1261,75 +1261,12 @@ def export_gantt_svg(fig):
         return None
 
 
-def export_gantt_png(fig):
-    """
-    将甘特图导出为PNG图片（仅本地环境可用，需要Chrome）
-    优先尝试PNG，失败则回退到SVG
-    """
-    import time
-    import os
-    import subprocess
-
-    # Streamlit Cloud 环境：自动下载 Chromium
-    if not os.environ.get("PLOTLY_KALEIDO_CHROMIUM_PATH"):
-        for chromium_path in [
-            "/usr/bin/chromium-browser",
-            "/usr/bin/chromium",
-            "/usr/bin/google-chrome",
-            "/usr/bin/google-chrome-stable",
-        ]:
-            if os.path.exists(chromium_path):
-                os.environ["PLOTLY_KALEIDO_CHROMIUM_PATH"] = chromium_path
-                break
-        else:
-            # 尝试使用 plotly_get_chrome 下载 Chromium
-            try:
-                subprocess.run(
-                    ["plotly_get_chrome"],
-                    check=True,
-                    capture_output=True,
-                    text=True
-                )
-            except Exception:
-                pass
-
-    max_retries = 3
-    last_error = None
-
-    for attempt in range(max_retries):
-        try:
-            img_bytes = pio.to_image(
-                fig,
-                format="png",
-                scale=2,
-                width=1800,
-                height=1200,
-            )
-            if img_bytes and len(img_bytes) > 1000:
-                return img_bytes
-        except Exception as e:
-            last_error = e
-            time.sleep(1)
-            continue
-
-    # 回退到 SVG
-    svg_bytes = export_gantt_svg(fig)
-    if svg_bytes:
-        st.warning(
-            "PNG 导出失败（需要Chrome），已自动切换为 SVG 格式。"
-            "SVG 是矢量图，可直接用浏览器打开，也可右键另存为图片。"
-        )
-        return ("svg", svg_bytes)
-    return None
-
-
 def export_combined_svg(fig_gantt, fig_manpower, progress_bar=None):
     """
     将甘特图和资源曲线合并为一个SVG图片（上下排列，跨平台通用）
     progress_bar: Streamlit progress bar 用于显示进度
     """
     import xml.etree.ElementTree as ET
-    import re
 
     def update_progress(step, total, msg):
         if progress_bar:
@@ -1348,17 +1285,15 @@ def export_combined_svg(fig_gantt, fig_manpower, progress_bar=None):
         root1 = ET.fromstring(svg1_str)
         root2 = ET.fromstring(svg2_str)
 
-        width = root1.get('width', '1400')
         height1 = int(root1.get('height', '1000'))
-        height2 = int(root2.get('height', '500'))
-        total_height = height1 + height2 + 20
+        total_height = height1 + int(root2.get('height', '500')) + 20
 
         root1.set('height', str(total_height))
 
         group = ET.SubElement(root1, 'g')
         group.set('transform', f'translate(0, {height1 + 20})')
 
-        for child in root2:
+        for child in list(root2):
             group.append(child)
 
         ET.register_namespace('', 'http://www.w3.org/2000/svg')
@@ -1372,14 +1307,6 @@ def export_combined_svg(fig_gantt, fig_manpower, progress_bar=None):
             progress_bar.progress(0, text=f"失败：{str(e)}")
         st.error(f"导出失败：{str(e)}")
         return None
-
-
-def export_combined_png(fig_gantt, fig_manpower, progress_bar=None):
-    """
-    将甘特图和资源曲线合并为一个图片（优先SVG，跨平台通用）
-    progress_bar: Streamlit progress bar 用于显示进度
-    """
-    return export_combined_svg(fig_gantt, fig_manpower, progress_bar)
 
 
 def export_tasks_csv(tasks_df):
@@ -1805,55 +1732,35 @@ def main():
                     key="manpower_chart"
                 )
             
-            # 3. 导出功能：合并两张图为一个PNG
+            # 3. 导出功能：合并两张图为一个SVG矢量图
             st.markdown("---")
             col_export1, col_export2 = st.columns([1, 1])
 
             with col_export1:
-                png_key = f"png_{current_version}"
-                if png_key not in st.session_state:
-                    st.session_state[png_key] = None
+                img_key = f"img_{current_version}"
+                if img_key not in st.session_state:
+                    st.session_state[img_key] = None
 
-                if st.session_state[png_key] is None:
-                    if st.button("🖼️ 生成PNG", key=f"btn_gen_png_{current_version}"):
+                if st.session_state[img_key] is None:
+                    if st.button("🖼️ 生成图片", key=f"btn_gen_img_{current_version}"):
                         progress_bar = st.progress(0, text="正在准备...")
                         fig_manpower_for_export = create_manpower_curve(
                             tasks_df[tasks_df["section_code"].isin(selected_sections)].copy()
                             if selected_sections else tasks_df.copy()
                         )
-                        result = export_combined_png(fig_gantt, fig_manpower_for_export, progress_bar)
+                        result = export_combined_svg(fig_gantt, fig_manpower_for_export, progress_bar)
                         if result:
-                            st.session_state[png_key] = result
+                            st.session_state[img_key] = result
                             st.success("图片生成成功！")
                             st.rerun()
                 else:
-                    result = st.session_state[png_key]
-                    if isinstance(result, tuple) and len(result) == 2:
-                        fmt, data = result
-                        st.download_button(
-                            label=f"📥 下载({fmt.upper()})",
-                            data=data,
-                            file_name=f"{overview.get('project_name', '进度计划')}_进度图.{fmt}",
-                            mime=f"image/{fmt}+xml" if fmt == "svg" else f"image/{fmt}",
-                            key=f"dl_{fmt}_{current_version}"
-                        )
-                    else:
-                        if isinstance(result, bytes) and result[:4] == b'<svg':
-                            st.download_button(
-                                label="📥 下载(SVG)",
-                                data=result,
-                                file_name=f"{overview.get('project_name', '进度计划')}_进度图.svg",
-                                mime="image/svg+xml",
-                                key=f"dl_svg_{current_version}"
-                            )
-                        else:
-                            st.download_button(
-                                label="📥 下载(PNG)",
-                                data=result,
-                                file_name=f"{overview.get('project_name', '进度计划')}_进度图.png",
-                                mime="image/png",
-                                key=f"dl_png_{current_version}"
-                            )
+                    st.download_button(
+                        label="📥 下载(SVG)",
+                        data=st.session_state[img_key],
+                        file_name=f"{overview.get('project_name', '进度计划')}_进度图.svg",
+                        mime="image/svg+xml",
+                        key=f"dl_svg_{current_version}"
+                    )
 
             with col_export2:
                 csv_data = export_tasks_csv(tasks_df)
@@ -1975,7 +1882,7 @@ def main():
         4. **筛选工序**：使用分部工程筛选器查看特定阶段的工序
         5. **资源详情**：在下方选择工序查看详细资源配置
         6. **版本对比**：加载多组数据后启用对比模式，查看工期偏差
-        7. **数据导出**：将甘特图导出为PNG，工序表导出为CSV
+        7. **数据导出**：将甘特图导出为SVG矢量图，工序表导出为CSV
         """)
         
         st.markdown("### 📋 JSON数据格式要求")
