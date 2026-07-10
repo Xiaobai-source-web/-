@@ -124,7 +124,8 @@ def get_history_directory():
 
 def save_uploaded_file_to_history(file_name, file_content):
     """
-    将上传的文件保存到历史目录
+    将上传的文件保存到历史目录（按文件名唯一存储）
+    同一文件名会被覆盖，不使用时间戳后缀
     
     参数:
         file_name: 文件名
@@ -134,11 +135,10 @@ def save_uploaded_file_to_history(file_name, file_content):
         保存后的文件路径
     """
     history_dir = get_history_directory()
-    # 避免重名冲突：添加时间戳后缀
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    base_name = file_name.replace('.json', '')
-    new_name = f"{base_name}_{timestamp}.json"
-    save_path = os.path.join(history_dir, new_name)
+    # 统一使用原始文件名，不加时间戳
+    if not file_name.endswith('.json'):
+        file_name = file_name + '.json'
+    save_path = os.path.join(history_dir, file_name)
     
     with open(save_path, 'wb') as f:
         f.write(file_content)
@@ -146,12 +146,29 @@ def save_uploaded_file_to_history(file_name, file_content):
     return save_path
 
 
+def check_history_file_exists(file_name):
+    """
+    检查历史文件中是否已存在该文件名
+    
+    参数:
+        file_name: 文件名
+        
+    返回:
+        bool - 是否存在
+    """
+    history_dir = get_history_directory()
+    if not file_name.endswith('.json'):
+        file_name = file_name + '.json'
+    save_path = os.path.join(history_dir, file_name)
+    return os.path.exists(save_path)
+
+
 def get_history_json_files():
     """
     获取历史目录下的所有JSON文件
     
     返回:
-        [(文件名, 文件路径, 上传时间)] 列表
+        [{'file_name', 'file_path', 'project_name', 'upload_time'}] 列表
     """
     history_dir = get_history_directory()
     if not os.path.exists(history_dir):
@@ -161,25 +178,23 @@ def get_history_json_files():
     for f in os.listdir(history_dir):
         if f.endswith('.json'):
             file_path = os.path.join(history_dir, f)
-            # 从文件名中提取上传时间
-            parts = f.replace('.json', '').split('_')
-            if len(parts) >= 3:
-                # 格式：项目名_YYYYMMDD_HHMMSS
-                upload_time_str = f"{parts[-2]}_{parts[-1]}"
-                project_name = '_'.join(parts[:-2])
-            else:
-                upload_time_str = "未知"
-                project_name = f.replace('.json', '')
+            # 获取文件修改时间
+            try:
+                mtime = os.path.getmtime(file_path)
+                upload_time = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                upload_time = "未知"
             
+            project_name = f[:-5] if f.endswith('.json') else f  # 去掉.json后缀
             files.append({
                 'file_name': f,
                 'file_path': file_path,
                 'project_name': project_name,
-                'upload_time': upload_time_str
+                'upload_time': upload_time
             })
     
-    # 按上传时间倒序排列（最新的在前）
-    files.sort(key=lambda x: x['upload_time'], reverse=True)
+    # 按文件名排序
+    files.sort(key=lambda x: x['file_name'])
     return files
 
 
@@ -442,7 +457,7 @@ def _build_resource_hover_text(resources):
     return "<br>".join(lines)
 
 
-def create_gantt_chart(tasks_df, milestones, section_filter=None, show_milestones=True):
+def create_gantt_chart(tasks_df, milestones, section_filter=None, show_milestones=True, fixed_date=None):
     """
     创建甘特图：
     - 横道两色：黑色=分部大类/自成一类，红色=小类工序
@@ -451,12 +466,13 @@ def create_gantt_chart(tasks_df, milestones, section_filter=None, show_milestone
     - 标题下方加一行时间轴，底部也有时间轴
     - 左侧：工序名 + 起止日期 + 工期
     - hover显示资源明细
+    - fixed_date: 固定时间竖线的日期（可选）
     """
     rows_df = _build_gantt_data(tasks_df, section_filter=section_filter)
     if rows_df is None or len(rows_df) == 0:
         fig = go.Figure()
         fig.update_layout(title="施工进度甘特图（暂无数据）")
-        return fig
+        return fig, None
 
     y_order = rows_df["label"].tolist()
     n_rows = len(rows_df)
@@ -522,7 +538,61 @@ def create_gantt_chart(tasks_df, milestones, section_filter=None, show_milestone
         hovertemplate="%{text}<extra></extra>",
     ))
 
-    # 2. 横道左右两端日期标签
+    # 3. 固定时间竖线（如果指定了 fixed_date）
+    shapes = []
+    fixed_date_info = None
+    
+    if fixed_date is not None:
+        fixed_dt = pd.Timestamp(fixed_date)
+        # 计算当天的活动任务信息
+        active_tasks_info = []
+        for t in red_tasks_list:
+            if t["Start"] <= fixed_dt <= t["Finish"]:
+                res_text = _build_resource_hover_text(t["resources"])
+                active_tasks_info.append({
+                    "task_id": t["task_id"],
+                    "task_name": t["task_name"],
+                    "duration": t["duration"],
+                    "resources": t["resources"],
+                    "res_text": res_text
+                })
+        
+        fixed_date_info = {
+            "date": fixed_dt,
+            "date_str": _format_cn_date(fixed_dt),
+            "active_tasks": active_tasks_info
+        }
+        
+        # 添加固定竖线形状（实线，与spike line区分）
+        shapes.append({
+            "type": "line",
+            "x0": fixed_dt,
+            "y0": 0,
+            "x1": fixed_dt,
+            "y1": 1,
+            "xref": "x",
+            "yref": "paper",
+            "line": {
+                "color": "#e74c3c",
+                "width": 3,
+                "dash": "solid",
+            },
+        })
+        
+        # 添加日期标注
+        annotations.append({
+            "x": fixed_dt,
+            "y": 1.02,
+            "xref": "x",
+            "yref": "paper",
+            "text": f"📌 {_format_cn_date(fixed_dt)}",
+            "showarrow": False,
+            "xanchor": "center",
+            "yanchor": "bottom",
+            "font": dict(size=12, color="#e74c3c", family="Microsoft YaHei", weight="bold"),
+        })
+
+    # 4. 横道左右两端日期标签
     annotations = []
     for _, row in rows_df.iterrows():
         annotations.append(dict(
@@ -588,6 +658,7 @@ def create_gantt_chart(tasks_df, milestones, section_filter=None, show_milestone
         plot_bgcolor="white",
         paper_bgcolor="white",
         annotations=annotations,
+        shapes=shapes,
         legend=dict(
             orientation="h",
             yanchor="bottom", y=1.02,
@@ -655,7 +726,7 @@ def create_gantt_chart(tasks_df, milestones, section_filter=None, show_milestone
         ),
     )
 
-    return fig
+    return fig, fixed_date_info
 
 
 def build_combined_gantt_and_manpower(
@@ -959,34 +1030,31 @@ def render_project_overview(overview):
     """
     st.markdown("### 📊 项目概览")
     
-    col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
+    # 项目名称单独一行，粗体放大
+    st.markdown(f"<h2 style='font-weight: bold; color: #1e3a8a;'>{overview.get('project_name', '未知项目')}</h2>", unsafe_allow_html=True)
+    
+    # 其他信息在下面一行
+    col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.markdown(f"**项目名称**")
-        st.markdown(f"<span style='font-size: 16px; font-weight: 600;'>{overview.get('project_name', '未知项目')}</span>", unsafe_allow_html=True)
-    
-    with col2:
         st.metric(
             label="总工期",
             value=f"{overview.get('total_duration_days', 0)} 天"
         )
     
-    with col3:
+    with col2:
         st.metric(
             label="计划开始",
             value=overview.get("planned_start_date", "N/A")
         )
     
-    with col4:
+    with col3:
         st.metric(
             label="计划完成",
             value=overview.get("planned_end_date", "N/A")
         )
     
-    # 第二行信息
-    col5, col6, col7, col8 = st.columns(4)
-    
-    with col5:
+    with col4:
         st.metric(
             label="关键路径工序数",
             value=f"{overview.get('critical_path_length', 0)} 项"
@@ -1029,7 +1097,15 @@ def render_resource_detail(task):
             })
         
         df_resources = pd.DataFrame(resource_data)
-        st.table(df_resources)
+        st.dataframe(
+            df_resources,
+            column_config={
+                "资源类型": st.column_config.TextColumn("资源类型", width="medium"),
+                "数量": st.column_config.NumberColumn("数量", width="small", align="center"),
+            },
+            hide_index=True,
+            use_container_width=True
+        )
     else:
         st.warning("该工序暂无资源配置信息")
 
@@ -1062,14 +1138,34 @@ def render_resource_plan(resource_plan):
     if equipment_peak:
         st.markdown("#### 主要设备峰值")
         eq_data = [{"设备名称": k, "峰值数量": v} for k, v in equipment_peak.items()]
-        st.table(pd.DataFrame(eq_data))
+        st.dataframe(
+            pd.DataFrame(eq_data),
+            column_config={
+                "设备名称": st.column_config.TextColumn("设备名称", width="medium"),
+                "峰值数量": st.column_config.NumberColumn("峰值数量", width="small", align="center"),
+            },
+            hide_index=True,
+            use_container_width=True
+        )
     
     # 材料汇总
     material_summary = resource_plan.get("material_summary", [])
     if material_summary:
         st.markdown("#### 主要材料汇总")
         df_materials = pd.DataFrame(material_summary)
-        st.table(df_materials)
+        # 自动检测并设置数字列居中
+        column_config = {}
+        for col in df_materials.columns:
+            if df_materials[col].dtype in ['int64', 'float64'] or (df_materials[col].apply(lambda x: str(x).isdigit()).all() if len(df_materials) > 0 else False):
+                column_config[col] = st.column_config.NumberColumn(col, align="center")
+            else:
+                column_config[col] = st.column_config.TextColumn(col)
+        st.dataframe(
+            df_materials,
+            column_config=column_config,
+            hide_index=True,
+            use_container_width=True
+        )
 
 
 def render_risks(risks):
@@ -1276,6 +1372,28 @@ def main():
         h1, h2, h3 {
             font-family: "Microsoft YaHei", "微软雅黑", sans-serif;
         }
+        /* 表格样式：数字单元格居中 */
+        .stTable table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .stTable th, .stTable td {
+            border: 1px solid #e5e7eb;
+            padding: 8px 12px;
+            text-align: left;
+        }
+        .stTable th {
+            background-color: #f3f4f6;
+            font-weight: 600;
+        }
+        /* 使用CSS选择器使数字单元格居中 */
+        .stTable td:has(> span:only-child) {
+            text-align: center;
+        }
+        /* 针对纯数字内容的单元格 */
+        .stTable td[data-align="center"] {
+            text-align: center;
+        }
     </style>
     """, unsafe_allow_html=True)
     
@@ -1334,33 +1452,62 @@ def main():
             uploaded_file = st.file_uploader(
                 "上传JSON文件",
                 type=["json"],
-                help="选择符合格式要求的施工进度JSON文件（上传后将自动保存到本地）"
+                help="选择符合格式要求的施工进度JSON文件（上传后将自动保存到本地）",
+                key="file_uploader"
             )
             
             if uploaded_file is not None:
-                try:
-                    file_content = uploaded_file.read()
-                    data = load_json_from_upload(file_content)
-                    is_valid, msg = validate_data_structure(data)
+                # 检查文件是否已存在
+                file_exists = check_history_file_exists(uploaded_file.name)
+                
+                if file_exists:
+                    # 文件已存在，提示用户选择替换或取消
+                    st.warning(f"⚠️ 文件 '{uploaded_file.name}' 已存在于历史记录中")
                     
-                    if is_valid:
-                        # 保存到历史目录（持久化）
-                        save_path = save_uploaded_file_to_history(uploaded_file.name, file_content)
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("✅ 替换为新文件", key="replace_btn", type="primary"):
+                            try:
+                                # 重置文件指针
+                                uploaded_file.seek(0)
+                                file_content = uploaded_file.read()
+                                data = load_json_from_upload(file_content)
+                                is_valid, msg = validate_data_structure(data)
+                                
+                                if is_valid:
+                                    # 覆盖保存
+                                    save_path = save_uploaded_file_to_history(uploaded_file.name, file_content)
+                                    version_name = uploaded_file.name.replace('.json', '')
+                                    st.session_state.data_versions[version_name] = data
+                                    st.success(f"✅ 已替换：{uploaded_file.name}")
+                                else:
+                                    st.error(msg)
+                            except Exception as e:
+                                st.error(f"解析失败：{str(e)}")
+                    
+                    with col2:
+                        if st.button("❌ 取消上传", key="cancel_upload_btn", type="secondary"):
+                            st.info("已取消上传")
+                else:
+                    # 文件不存在，正常上传
+                    try:
+                        file_content = uploaded_file.read()
+                        data = load_json_from_upload(file_content)
+                        is_valid, msg = validate_data_structure(data)
                         
-                        version_name = uploaded_file.name.replace('.json', '')
-                        # 使用文件名+时间戳作为版本名，避免冲突
-                        timestamp_suffix = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        unique_version_name = f"{version_name}_{timestamp_suffix}"
-                        
-                        st.session_state.data_versions[unique_version_name] = data
-                        st.success(f"✅ 成功加载并保存：{uploaded_file.name}")
-                        st.info(f"已保存到历史记录，下次可从历史文件中加载")
-                    else:
-                        st.error(msg)
-                except Exception as e:
-                    st.error(f"解析失败：{str(e)}")
+                        if is_valid:
+                            # 保存到历史目录
+                            save_uploaded_file_to_history(uploaded_file.name, file_content)
+                            
+                            version_name = uploaded_file.name.replace('.json', '')
+                            st.session_state.data_versions[version_name] = data
+                            st.success(f"✅ 成功上传：{uploaded_file.name}")
+                        else:
+                            st.error(msg)
+                    except Exception as e:
+                        st.error(f"解析失败：{str(e)}")
         
-        # 历史文件管理
+        # 历史文件管理（优化性能：分页+紧凑布局）
         st.markdown("---")
         st.subheader("📂 历史文件管理")
         
@@ -1368,42 +1515,75 @@ def main():
         if history_files:
             st.markdown(f"**共 {len(history_files)} 个历史文件**")
             
-            # 显示历史文件列表
-            for hf in history_files:
-                with st.container():
-                    col1, col2, col3 = st.columns([3, 2, 1])
-                    with col1:
-                        st.markdown(f"📁 **{hf['project_name']}**")
-                    with col2:
-                        st.markdown(f"⏱️ {hf['upload_time']}")
-                    with col3:
-                        # 加载按钮
-                        if st.button("加载", key=f"load_{hf['file_name']}", type="primary"):
-                            try:
-                                data = load_json_from_file(hf['file_path'])
-                                is_valid, msg = validate_data_structure(data)
-                                if is_valid:
-                                    version_name = hf['project_name']
-                                    if version_name not in st.session_state.data_versions:
-                                        st.session_state.data_versions[version_name] = data
-                                        st.success(f"✅ 已加载：{hf['project_name']}")
-                                        st.rerun()
-                                    else:
-                                        st.info(f"该版本已在当前会话中")
+            # 分页机制优化性能
+            if "history_page" not in st.session_state:
+                st.session_state.history_page = 0
+            
+            page_size = 10
+            total_pages = max(1, (len(history_files) + page_size - 1) // page_size)
+            current_page = st.session_state.history_page
+            
+            start_idx = current_page * page_size
+            end_idx = min(start_idx + page_size, len(history_files))
+            page_files = history_files[start_idx:end_idx]
+            
+            # 分页控件
+            if total_pages > 1:
+                col_p1, col_p2, col_p3 = st.columns([1, 2, 1])
+                with col_p1:
+                    if st.button("◀ 上一页", disabled=(current_page == 0), key="prev_page"):
+                        st.session_state.history_page = max(0, current_page - 1)
+                        st.rerun()
+                with col_p2:
+                    st.markdown(f"<center>第 {current_page + 1} / {total_pages} 页</center>", unsafe_allow_html=True)
+                with col_p3:
+                    if st.button("下一页 ▶", disabled=(current_page >= total_pages - 1), key="next_page"):
+                        st.session_state.history_page = min(total_pages - 1, current_page + 1)
+                        st.rerun()
+            
+            # 显示当前页的文件列表
+            for hf in page_files:
+                col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
+                with col1:
+                    st.markdown(f"📁 **{hf['project_name']}**")
+                    st.caption(f"⏱️ {hf['upload_time']}")
+                with col2:
+                    # 加载按钮
+                    if st.button("加载", key=f"load_{hf['file_name']}", type="primary"):
+                        try:
+                            data = load_json_from_file(hf['file_path'])
+                            is_valid, msg = validate_data_structure(data)
+                            if is_valid:
+                                version_name = hf['project_name']
+                                if version_name not in st.session_state.data_versions:
+                                    st.session_state.data_versions[version_name] = data
+                                    st.success(f"✅ 已加载")
+                                    st.rerun()
                                 else:
-                                    st.error(f"文件格式错误：{msg}")
-                            except Exception as e:
-                                st.error(f"加载失败：{str(e)}")
-                    
-                    # 删除按钮（单独一行）
-                    if st.button("🗑️ 删除", key=f"delete_{hf['file_name']}", type="secondary"):
+                                    st.info("该版本已在当前会话中")
+                            else:
+                                st.error(f"格式错误：{msg}")
+                        except Exception as e:
+                            st.error(f"加载失败：{str(e)}")
+                with col3:
+                    # 文件信息按钮
+                    if st.button("ℹ️", key=f"info_{hf['file_name']}", help="查看文件信息"):
+                        try:
+                            file_size = os.path.getsize(hf['file_path']) / 1024
+                            st.info(f"📄 {hf['file_name']}\n大小: {file_size:.1f} KB\n修改时间: {hf['upload_time']}")
+                        except Exception:
+                            pass
+                with col4:
+                    # 删除按钮
+                    if st.button("🗑️", key=f"delete_{hf['file_name']}", type="secondary", help="删除历史文件"):
                         if delete_history_file(hf['file_path']):
+                            version_name = hf['project_name']
+                            if version_name in st.session_state.data_versions:
+                                del st.session_state.data_versions[version_name]
                             st.success(f"已删除：{hf['project_name']}")
                             st.rerun()
                         else:
                             st.error("删除失败")
-                    
-                    st.markdown("---")
         else:
             st.info("暂无历史文件，上传文件后将自动保存")
         
@@ -1508,21 +1688,55 @@ def main():
             with col_filter3:
                 show_resource_curve = st.checkbox("显示资源曲线", value=True)
             
+            # 固定时间竖线选择器
+            st.markdown("---")
+            st.subheader("📍 固定时间竖线")
+            col_fix1, col_fix2 = st.columns([3, 1])
+            with col_fix1:
+                fixed_date = st.date_input(
+                    "选择日期",
+                    value=None,
+                    min_value=tasks_df["start_date"].min().date(),
+                    max_value=tasks_df["finish_date"].max().date(),
+                    key="fixed_date_picker"
+                )
+            with col_fix2:
+                if st.button("🗑️ 清除", key="clear_fixed_date"):
+                    fixed_date = None
+                    st.session_state.fixed_date_picker = None
+            
+            st.info("💡 在甘特图上鼠标悬停时会显示黄色日期竖线，选择日期后会显示红色固定竖线及当天工序信息")
+            
             st.markdown("---")
 
             # 1. 单独显示甘特图（上下各有时间轴）
             st.subheader("📊 施工进度甘特图")
-            fig_gantt = create_gantt_chart(
+            fig_gantt, fixed_info = create_gantt_chart(
                 tasks_df,
                 milestones,
                 section_filter=selected_sections if selected_sections else None,
-                show_milestones=show_milestones
+                show_milestones=show_milestones,
+                fixed_date=fixed_date
             )
             st.plotly_chart(
                 fig_gantt,
                 use_container_width=True,
                 key="gantt_chart"
             )
+            
+            # 显示固定日期详细信息
+            if fixed_info:
+                st.markdown("---")
+                st.subheader(f"📌 {fixed_info['date_str']} 当日工程状态")
+                if fixed_info["active_tasks"]:
+                    for task in fixed_info["active_tasks"]:
+                        with st.expander(f"🔴 {task['task_id']} {task['task_name']}"):
+                            st.markdown(f"**工期**：{task['duration']}天")
+                            st.markdown(f"**资源配置**：")
+                            for res_name, res_count in sorted(task["resources"].items()):
+                                st.markdown(f"  • {res_name}：{res_count}")
+                else:
+                    st.info("当天无进行中的小类工序")
 
             # 2. 单独显示资源负荷曲线（自己的时间轴）
             if show_resource_curve:
