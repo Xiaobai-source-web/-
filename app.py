@@ -17,14 +17,6 @@ import plotly.graph_objects as go
 import plotly.io as pio
 from plotly.subplots import make_subplots
 
-# matplotlib 用于服务器端 PNG 导出（不依赖浏览器/Chrome）
-import matplotlib
-matplotlib.use("Agg")  # 非交互式后端，适合服务器环境
-import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
-from matplotlib.patches import Patch
-from matplotlib.lines import Line2D
-
 
 # ==================== 数据加载与解析模块 ====================
 
@@ -1272,7 +1264,14 @@ def export_combined_png_matplotlib(tasks_df, milestones, section_filter=None, sh
             progress_bar.progress(step / total, text=msg)
 
     try:
-        # 配置中文字体（跨平台兼容）
+        # 延迟导入 matplotlib（只在需要PNG导出时才导入）
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import matplotlib.dates as mdates
+        from matplotlib.patches import Patch
+        from matplotlib.lines import Line2D
+
         plt.rcParams["font.sans-serif"] = [
             "Microsoft YaHei", "SimHei", "Noto Sans SC",
             "WenQuanYi Micro Hei", "DejaVu Sans"
