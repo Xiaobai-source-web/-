@@ -457,7 +457,7 @@ def _build_resource_hover_text(resources):
     return "<br>".join(lines)
 
 
-def create_gantt_chart(tasks_df, milestones, section_filter=None, show_milestones=True, fixed_date=None):
+def create_gantt_chart(tasks_df, milestones, section_filter=None, show_milestones=True):
     """
     创建甘特图：
     - 横道两色：黑色=分部大类/自成一类，红色=小类工序
@@ -466,13 +466,12 @@ def create_gantt_chart(tasks_df, milestones, section_filter=None, show_milestone
     - 标题下方加一行时间轴，底部也有时间轴
     - 左侧：工序名 + 起止日期 + 工期
     - hover显示资源明细
-    - fixed_date: 固定时间竖线的日期（可选）
     """
     rows_df = _build_gantt_data(tasks_df, section_filter=section_filter)
     if rows_df is None or len(rows_df) == 0:
         fig = go.Figure()
         fig.update_layout(title="施工进度甘特图（暂无数据）")
-        return fig, None
+        return fig
 
     y_order = rows_df["label"].tolist()
     n_rows = len(rows_df)
@@ -497,7 +496,7 @@ def create_gantt_chart(tasks_df, milestones, section_filter=None, show_milestone
         fig.add_trace(go.Bar(
             x=x_durations,
             y=label_set["label"].tolist(),
-            base=label_set["Start"].tolist(),
+            base=[d.to_pydatetime() for d in label_set["Start"]],
             orientation="h",
             marker=dict(color=color, line=dict(color="#333", width=0.5)),
             name=name,
@@ -538,73 +537,21 @@ def create_gantt_chart(tasks_df, milestones, section_filter=None, show_milestone
         hovertemplate="%{text}<extra></extra>",
     ))
 
-    # 3. 固定时间竖线（如果指定了 fixed_date）
-    shapes = []
+    # 3. 横道左右两端日期标签
     annotations = []
-    fixed_date_info = None
-    
-    if fixed_date is not None:
-        fixed_dt = pd.Timestamp(fixed_date)
-        # 计算当天的活动任务信息
-        active_tasks_info = []
-        for t in red_tasks_list:
-            if t["Start"] <= fixed_dt <= t["Finish"]:
-                res_text = _build_resource_hover_text(t["resources"])
-                active_tasks_info.append({
-                    "task_id": t["task_id"],
-                    "task_name": t["task_name"],
-                    "duration": t["duration"],
-                    "resources": t["resources"],
-                    "res_text": res_text
-                })
-        
-        fixed_date_info = {
-            "date": fixed_dt,
-            "date_str": _format_cn_date(fixed_dt),
-            "active_tasks": active_tasks_info
-        }
-        
-        # 添加固定竖线形状（实线，与spike line区分）
-        shapes.append({
-            "type": "line",
-            "x0": fixed_dt,
-            "y0": 0,
-            "x1": fixed_dt,
-            "y1": 1,
-            "xref": "x",
-            "yref": "paper",
-            "line": {
-                "color": "#e74c3c",
-                "width": 3,
-                "dash": "solid",
-            },
-        })
-        
-        # 添加日期标注
-        annotations.append({
-            "x": fixed_dt,
-            "y": 1.02,
-            "xref": "x",
-            "yref": "paper",
-            "text": f"📌 {_format_cn_date(fixed_dt)}",
-            "showarrow": False,
-            "xanchor": "center",
-            "yanchor": "bottom",
-            "font": dict(size=12, color="#e74c3c", family="Microsoft YaHei", weight="bold"),
-        })
-
-    # 4. 横道左右两端日期标签
     for _, row in rows_df.iterrows():
+        start_dt = row["Start"].to_pydatetime()
+        finish_dt = row["Finish"].to_pydatetime()
         annotations.append(dict(
-            x=row["Start"], y=row["label"],
-            text=_format_short_date(row["Start"]),
+            x=start_dt, y=row["label"],
+            text=_format_short_date(start_dt),
             showarrow=False, xanchor="right", yanchor="middle",
             xshift=-5,
             font=dict(size=9, color="#333", family="Microsoft YaHei"),
         ))
         annotations.append(dict(
-            x=row["Finish"], y=row["label"],
-            text=_format_short_date(row["Finish"]),
+            x=finish_dt, y=row["label"],
+            text=_format_short_date(finish_dt),
             showarrow=False, xanchor="left", yanchor="middle",
             xshift=5,
             font=dict(size=9, color="#333", family="Microsoft YaHei"),
@@ -658,7 +605,6 @@ def create_gantt_chart(tasks_df, milestones, section_filter=None, show_milestone
         plot_bgcolor="white",
         paper_bgcolor="white",
         annotations=annotations,
-        shapes=shapes,
         legend=dict(
             orientation="h",
             yanchor="bottom", y=1.02,
@@ -726,7 +672,7 @@ def create_gantt_chart(tasks_df, milestones, section_filter=None, show_milestone
         ),
     )
 
-    return fig, fixed_date_info
+    return fig
 
 
 def build_combined_gantt_and_manpower(
@@ -790,7 +736,7 @@ def build_combined_gantt_and_manpower(
         fig.add_trace(go.Bar(
             x=x_durations,
             y=label_set["label"].tolist(),
-            base=label_set["Start"].tolist(),
+            base=[d.to_pydatetime() for d in label_set["Start"]],
             orientation="h",
             marker=dict(color=color, line=dict(color="#333", width=0.5)),
             name=name,
@@ -803,16 +749,18 @@ def build_combined_gantt_and_manpower(
     # 3. 上图：左右两端日期标签
     annotations = []
     for _, row in rows_df.iterrows():
+        start_dt = row["Start"].to_pydatetime()
+        finish_dt = row["Finish"].to_pydatetime()
         annotations.append(dict(
-            x=row["Start"], y=row["label"],
-            text=_format_short_date(row["Start"]),
+            x=start_dt, y=row["label"],
+            text=_format_short_date(start_dt),
             showarrow=False, xanchor="right", yanchor="middle",
             xshift=-5, xref="x", yref="y",
             font=dict(size=9, color="#333", family="Microsoft YaHei"),
         ))
         annotations.append(dict(
-            x=row["Finish"], y=row["label"],
-            text=_format_short_date(row["Finish"]),
+            x=finish_dt, y=row["label"],
+            text=_format_short_date(finish_dt),
             showarrow=False, xanchor="left", yanchor="middle",
             xshift=5, xref="x", yref="y",
             font=dict(size=9, color="#333", family="Microsoft YaHei"),
@@ -1061,6 +1009,104 @@ def render_project_overview(overview):
         )
 
 
+def _is_numeric_value(v):
+    """判断值是否为数字（int/float/可转为数字的字符串）"""
+    if v is None:
+        return False
+    if isinstance(v, (int, float)):
+        return True
+    if isinstance(v, str):
+        try:
+            float(v.replace(",", ""))
+            return True
+        except (ValueError, AttributeError):
+            return False
+    return False
+
+
+def _render_centered_table(df):
+    """
+    渲染带数字居中的HTML表格
+    - 文本列左对齐
+    - 数字列居中对齐
+    """
+    if df is None or len(df) == 0:
+        st.info("暂无数据")
+        return
+
+    columns = df.columns.tolist()
+    # 判断每列是否为数字列
+    numeric_cols = set()
+    for col in columns:
+        col_values = df[col].dropna()
+        if len(col_values) == 0:
+            continue
+        # 如果该列所有非空值都是数字，则视为数字列
+        if all(_is_numeric_value(v) for v in col_values):
+            numeric_cols.add(col)
+
+    # 构建HTML表格
+    html_parts = ['<table class="centered-table">']
+    # 表头
+    html_parts.append('<thead><tr>')
+    for col in columns:
+        html_parts.append(f'<th>{col}</th>')
+    html_parts.append('</tr></thead>')
+    # 表体
+    html_parts.append('<tbody>')
+    for _, row in df.iterrows():
+        html_parts.append('<tr>')
+        for col in columns:
+            value = row[col]
+            if value is None or (isinstance(value, float) and pd.isna(value)):
+                value = ""
+            if col in numeric_cols:
+                # 数字列居中
+                if isinstance(value, float) and value == int(value):
+                    value = f"{int(value):,}"
+                elif isinstance(value, (int, float)):
+                    value = f"{value:,}"
+                html_parts.append(f'<td class="num-cell">{value}</td>')
+            else:
+                html_parts.append(f'<td>{value}</td>')
+        html_parts.append('</tr>')
+    html_parts.append('</tbody></table>')
+
+    # 添加CSS样式
+    css = """
+    <style>
+    .centered-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-family: "Microsoft YaHei", "微软雅黑", sans-serif;
+        margin: 10px 0;
+    }
+    .centered-table th, .centered-table td {
+        border: 1px solid #e5e7eb;
+        padding: 8px 12px;
+        text-align: left;
+    }
+    .centered-table th {
+        background-color: #f3f4f6;
+        font-weight: 600;
+        text-align: center;
+    }
+    .centered-table .num-cell {
+        text-align: center;
+        font-variant-numeric: tabular-nums;
+    }
+    .centered-table tbody tr:nth-child(even) {
+        background-color: #fafafa;
+    }
+    .centered-table tbody tr:hover {
+        background-color: #f0f9ff;
+    }
+    </style>
+    """
+    st.markdown(css, unsafe_allow_html=True)
+    st.markdown("".join(html_parts), unsafe_allow_html=True)
+
+
 def render_resource_detail(task):
     """
     渲染选中工序的资源详情
@@ -1097,15 +1143,7 @@ def render_resource_detail(task):
             })
         
         df_resources = pd.DataFrame(resource_data)
-        st.dataframe(
-            df_resources,
-            column_config={
-                "资源类型": st.column_config.TextColumn("资源类型", width="medium"),
-                "数量": st.column_config.NumberColumn("数量", width="small", align="center"),
-            },
-            hide_index=True,
-            use_container_width=True
-        )
+        _render_centered_table(df_resources)
     else:
         st.warning("该工序暂无资源配置信息")
 
@@ -1138,34 +1176,14 @@ def render_resource_plan(resource_plan):
     if equipment_peak:
         st.markdown("#### 主要设备峰值")
         eq_data = [{"设备名称": k, "峰值数量": v} for k, v in equipment_peak.items()]
-        st.dataframe(
-            pd.DataFrame(eq_data),
-            column_config={
-                "设备名称": st.column_config.TextColumn("设备名称", width="medium"),
-                "峰值数量": st.column_config.NumberColumn("峰值数量", width="small", align="center"),
-            },
-            hide_index=True,
-            use_container_width=True
-        )
+        _render_centered_table(pd.DataFrame(eq_data))
     
     # 材料汇总
     material_summary = resource_plan.get("material_summary", [])
     if material_summary:
         st.markdown("#### 主要材料汇总")
         df_materials = pd.DataFrame(material_summary)
-        # 自动检测并设置数字列居中
-        column_config = {}
-        for col in df_materials.columns:
-            if df_materials[col].dtype in ['int64', 'float64'] or (df_materials[col].apply(lambda x: str(x).isdigit()).all() if len(df_materials) > 0 else False):
-                column_config[col] = st.column_config.NumberColumn(col, align="center")
-            else:
-                column_config[col] = st.column_config.TextColumn(col)
-        st.dataframe(
-            df_materials,
-            column_config=column_config,
-            hide_index=True,
-            use_container_width=True
-        )
+        _render_centered_table(df_materials)
 
 
 def render_risks(risks):
@@ -1197,7 +1215,7 @@ def render_milestones_table(milestones):
         df_milestones["date"] = pd.to_datetime(df_milestones["date"])
         df_milestones = df_milestones.sort_values("date")
         df_milestones["date"] = df_milestones["date"].dt.strftime("%Y-%m-%d")
-        st.table(df_milestones)
+        _render_centered_table(df_milestones)
 
 
 # ==================== 导出功能模块 ====================
@@ -1688,35 +1706,15 @@ def main():
             with col_filter3:
                 show_resource_curve = st.checkbox("显示资源曲线", value=True)
             
-            # 固定时间竖线选择器
-            st.markdown("---")
-            st.subheader("📍 固定时间竖线")
-            col_fix1, col_fix2 = st.columns([3, 1])
-            with col_fix1:
-                fixed_date = st.date_input(
-                    "选择日期",
-                    value=None,
-                    min_value=tasks_df["start_date"].min().date(),
-                    max_value=tasks_df["finish_date"].max().date(),
-                    key="fixed_date_picker"
-                )
-            with col_fix2:
-                if st.button("🗑️ 清除", key="clear_fixed_date"):
-                    fixed_date = None
-                    st.session_state.fixed_date_picker = None
-            
-            st.info("💡 在甘特图上鼠标悬停时会显示黄色日期竖线，选择日期后会显示红色固定竖线及当天工序信息")
-            
             st.markdown("---")
 
             # 1. 单独显示甘特图（上下各有时间轴）
             st.subheader("📊 施工进度甘特图")
-            fig_gantt, fixed_info = create_gantt_chart(
+            fig_gantt = create_gantt_chart(
                 tasks_df,
                 milestones,
                 section_filter=selected_sections if selected_sections else None,
                 show_milestones=show_milestones,
-                fixed_date=fixed_date
             )
             st.plotly_chart(
                 fig_gantt,
@@ -1724,20 +1722,6 @@ def main():
                 key="gantt_chart"
             )
             
-            # 显示固定日期详细信息
-            if fixed_info:
-                st.markdown("---")
-                st.subheader(f"📌 {fixed_info['date_str']} 当日工程状态")
-                if fixed_info["active_tasks"]:
-                    for task in fixed_info["active_tasks"]:
-                        with st.expander(f"🔴 {task['task_id']} {task['task_name']}"):
-                            st.markdown(f"**工期**：{task['duration']}天")
-                            st.markdown(f"**资源配置**：")
-                            for res_name, res_count in sorted(task["resources"].items()):
-                                st.markdown(f"  • {res_name}：{res_count}")
-                else:
-                    st.info("当天无进行中的小类工序")
-
             # 2. 单独显示资源负荷曲线（自己的时间轴）
             if show_resource_curve:
                 st.markdown("---")
