@@ -514,6 +514,11 @@ def create_gantt_chart(tasks_df, milestones, section_filter=None, show_milestone
         showgrid=True, zeroline=False,
         showticklabels=True,
         side="bottom",
+        showspikes=True,
+        spikecolor="#f1c40f",
+        spikesnap="cursor",
+        spikethickness=2,
+        spikedash="solid",
     )
     # 顶部时间轴（xaxis2，覆盖在x轴上）
     fig.update_layout(
@@ -528,6 +533,17 @@ def create_gantt_chart(tasks_df, milestones, section_filter=None, show_milestone
             showticklabels=True,
             anchor="y",
             dtick="M1",
+            showspikes=True,
+            spikecolor="#f1c40f",
+            spikesnap="cursor",
+            spikethickness=2,
+            spikedash="solid",
+        ),
+        hovermode="x unified",
+        hoverlabel=dict(
+            font=dict(family="Microsoft YaHei", size=12),
+            bgcolor="rgba(241, 196, 15, 0.95)",
+            bordercolor="#f1c40f",
         ),
     )
 
