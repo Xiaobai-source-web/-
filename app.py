@@ -1273,7 +1273,10 @@ def export_combined_html(fig_gantt, fig_manpower, progress_bar=None):
     """
     def update_progress(step, total, msg):
         if progress_bar:
-            progress_bar.progress(step / total, text=msg)
+            try:
+                progress_bar.progress(step / total, text=msg)
+            except TypeError:
+                progress_bar.progress(step / total)
 
     try:
         update_progress(1, 3, "正在渲染甘特图...")
@@ -1311,7 +1314,10 @@ def export_combined_html(fig_gantt, fig_manpower, progress_bar=None):
 
     except Exception as e:
         if progress_bar:
-            progress_bar.progress(0, text=f"失败：{str(e)}")
+            try:
+                progress_bar.progress(0, text=f"失败：{str(e)}")
+            except TypeError:
+                progress_bar.progress(0)
         st.error(f"导出失败：{str(e)}")
         return None
 
@@ -1753,7 +1759,10 @@ def main():
 
                 if st.session_state[html_key] is None:
                     if st.button("🌐 生成HTML", key=f"btn_gen_html_{current_version}"):
-                        progress_bar = st.progress(0, text="正在准备...")
+                        try:
+                            progress_bar = st.progress(0, text="正在准备...")
+                        except TypeError:
+                            progress_bar = st.progress(0)
                         fig_manpower_for_export = create_manpower_curve(
                             tasks_df[tasks_df["section_code"].isin(selected_sections)].copy()
                             if selected_sections else tasks_df.copy()
@@ -1763,7 +1772,8 @@ def main():
                             st.session_state[html_key] = result
                             st.success("HTML生成成功！")
                             st.rerun()
-                else:
+
+                if st.session_state[html_key] is not None:
                     st.download_button(
                         label="📥 下载(HTML)",
                         data=st.session_state[html_key],
