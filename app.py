@@ -1276,10 +1276,14 @@ def export_combined_png_matplotlib(tasks_df, milestones, section_filter=None, sh
         from matplotlib.patches import Patch
         from matplotlib.lines import Line2D
 
-        plt.rcParams["font.sans-serif"] = [
-            "Microsoft YaHei", "SimHei", "Noto Sans SC",
-            "WenQuanYi Micro Hei", "DejaVu Sans"
-        ]
+        # 安全设置中文字体（Cloud Linux 环境可能缺少中文字体）
+        import matplotlib.font_manager as fm
+        available_fonts = [f.name for f in fm.fontManager.ttflist]
+        cn_fonts = [f for f in available_fonts if any(k in f for k in ["Hei", "YaHei", "Noto Sans CJK", "WenQuanYi", "SimSun", "Source Han", "Droid Sans Fallback"])]
+        if cn_fonts:
+            plt.rcParams["font.sans-serif"] = cn_fonts[:3] + ["DejaVu Sans"]
+        else:
+            plt.rcParams["font.sans-serif"] = ["DejaVu Sans"]
         plt.rcParams["axes.unicode_minus"] = False
 
         update_progress(1, 3, "正在绘制甘特图...")
