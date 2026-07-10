@@ -1207,6 +1207,8 @@ def render_resource_plan(resource_plan):
     if material_summary:
         st.markdown("#### 主要材料汇总")
         df_materials = pd.DataFrame(material_summary)
+        # 表头改为中文
+        df_materials.columns = ["材料名称", "总数量", "单位"]
         _render_centered_table(df_materials)
 
 
@@ -1239,6 +1241,8 @@ def render_milestones_table(milestones):
         df_milestones["date"] = pd.to_datetime(df_milestones["date"])
         df_milestones = df_milestones.sort_values("date")
         df_milestones["date"] = df_milestones["date"].dt.strftime("%Y-%m-%d")
+        # 表头改为中文
+        df_milestones.columns = ["里程碑名称", "日期", "关联工序", "描述"]
         _render_centered_table(df_milestones)
 
 
@@ -1484,6 +1488,9 @@ def export_tasks_csv(tasks_df):
     export_df["assigned_resources"] = export_df["assigned_resources"].apply(
         lambda x: json.dumps(x, ensure_ascii=False) if isinstance(x, dict) else str(x)
     )
+    
+    # 表头改为中文
+    export_df.columns = ["工序编号", "工序名称", "开始日期", "完成日期", "工期(天)", "资源配置", "是否关键工序", "分部编码"]
     
     # 转换为CSV
     csv = export_df.to_csv(index=False, encoding='utf-8-sig')
@@ -1897,7 +1904,17 @@ def main():
                 if img_key not in st.session_state:
                     st.session_state[img_key] = None
 
-                if st.session_state[img_key] is None:
+                # 检测 matplotlib 是否可用
+                try:
+                    import matplotlib
+                    matplotlib_available = True
+                except ImportError:
+                    matplotlib_available = False
+
+                if not matplotlib_available:
+                    st.button("🖼️ 生成PNG", key=f"btn_gen_png_{current_version}", disabled=True)
+                    st.caption("⚠️ PNG功能需安装matplotlib。请将代码推送到GitHub，Streamlit Cloud会自动安装。")
+                elif st.session_state[img_key] is None:
                     if st.button("🖼️ 生成PNG", key=f"btn_gen_png_{current_version}"):
                         progress_bar = st.progress(0, text="正在准备...")
                         fig_manpower_for_export = create_manpower_curve(
