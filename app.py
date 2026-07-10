@@ -383,24 +383,6 @@ def create_gantt_chart(tasks_df, milestones, section_filter=None, show_milestone
             (row["Finish"] - row["Start"]).total_seconds() * 1000
             for _, row in label_set.iterrows()
         ]
-        hover_texts = []
-        for _, row in label_set.iterrows():
-            if row["row_type"] == "section":
-                hover_texts.append(
-                    f"<b>{row['label']}</b><br>"
-                    f"开始：{_format_cn_date(row['Start'])}<br>"
-                    f"完成：{_format_cn_date(row['Finish'])}<br>"
-                    f"工期：{row['duration']}天"
-                )
-            else:
-                res_text = _build_resource_hover_text(row["resources"])
-                hover_texts.append(
-                    f"<b>{row['task_id']} {row['task_name']}</b><br>"
-                    f"开始：{_format_cn_date(row['Start'])}<br>"
-                    f"完成：{_format_cn_date(row['Finish'])}<br>"
-                    f"工期：{row['duration']}天<br>"
-                    f"<b>资源配置：</b><br>{res_text}"
-                )
 
         fig.add_trace(go.Bar(
             x=x_durations,
@@ -410,10 +392,41 @@ def create_gantt_chart(tasks_df, milestones, section_filter=None, show_milestone
             marker=dict(color=color, line=dict(color="#333", width=0.5)),
             name=name,
             showlegend=True,
-            hoverinfo="text",
-            hovertext=hover_texts,
+            hoverinfo="skip",
             width=0.6,
         ))
+
+    # 2. 透明 Scatter trace：覆盖整个日期范围，解决悬停灵敏度问题
+    #    hover 只展示当天正在进行的红色小类工序及其资源配置
+    date_min = rows_df["Start"].min()
+    date_max = rows_df["Finish"].max()
+    all_dates = pd.date_range(start=date_min, end=date_max, freq='D')
+    red_tasks_list = red_rows.to_dict('records')
+
+    daily_hover_texts = []
+    for d in all_dates:
+        active_tasks = [t for t in red_tasks_list if t["Start"] <= d <= t["Finish"]]
+        if active_tasks:
+            lines = []
+            for t in active_tasks:
+                res_text = _build_resource_hover_text(t["resources"])
+                lines.append(f"<b>{t['task_id']} {t['task_name']}</b>")
+                lines.append(f"工期：{t['duration']}天")
+                lines.append(f"资源配置：{res_text}")
+            daily_hover_texts.append("<br>".join(lines))
+        else:
+            daily_hover_texts.append("当天无进行中的小类工序")
+
+    fig.add_trace(go.Scatter(
+        x=all_dates,
+        y=[y_order[len(y_order) // 2]] * len(all_dates),
+        mode="markers",
+        marker=dict(color="rgba(0,0,0,0)", size=1),
+        text=daily_hover_texts,
+        hoverinfo="text",
+        showlegend=False,
+        hovertemplate="%{text}<extra></extra>",
+    ))
 
     # 2. 横道左右两端日期标签
     annotations = []
@@ -509,6 +522,7 @@ def create_gantt_chart(tasks_df, milestones, section_filter=None, show_milestone
     fig.update_xaxes(
         type="date",
         tickformat="%Y年%m月%d日",
+        hoverformat="%Y年%m月%d日",
         tickangle=-45,
         gridcolor="rgba(0,0,0,0.1)",
         showgrid=True, zeroline=False,
