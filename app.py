@@ -1248,163 +1248,6 @@ def render_milestones_table(milestones):
 
 # ==================== 导出功能模块 ====================
 
-def export_combined_png_matplotlib(tasks_df, milestones, section_filter=None, show_milestones=True, progress_bar=None):
-    """
-    使用 matplotlib 纯 Python 绘制甘特图和资源曲线，保存为 PNG。
-    不依赖 Chrome/Kaleido/Pillow，适合 Streamlit Cloud 等服务器环境。
-
-    参数:
-        tasks_df: 任务DataFrame
-        milestones: 里程碑列表
-        section_filter: 分部工程筛选列表
-        show_milestones: 是否显示里程碑
-        progress_bar: Streamlit progress bar
-
-    返回:
-        PNG 图片 bytes
-    """
-    def update_progress(step, total, msg):
-        if progress_bar:
-            progress_bar.progress(step / total, text=msg)
-
-    try:
-        # 延迟导入 matplotlib（只在需要PNG导出时才导入）
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        import matplotlib.dates as mdates
-        from matplotlib.patches import Patch
-        from matplotlib.lines import Line2D
-
-        # 安全设置中文字体（Cloud Linux 环境可能缺少中文字体）
-        import matplotlib.font_manager as fm
-        available_fonts = [f.name for f in fm.fontManager.ttflist]
-        cn_fonts = [f for f in available_fonts if any(k in f for k in ["Hei", "YaHei", "Noto Sans CJK", "WenQuanYi", "SimSun", "Source Han", "Droid Sans Fallback"])]
-        if cn_fonts:
-            plt.rcParams["font.sans-serif"] = cn_fonts[:3] + ["DejaVu Sans"]
-        else:
-            plt.rcParams["font.sans-serif"] = ["DejaVu Sans"]
-        plt.rcParams["axes.unicode_minus"] = False
-
-        update_progress(1, 3, "正在绘制甘特图...")
-
-        # 构建甘特图数据
-        rows_df = _build_gantt_data(tasks_df, section_filter=section_filter)
-        if rows_df is None or len(rows_df) == 0:
-            st.error("无数据可导出")
-            return None
-
-        fig, (ax_gantt, ax_resource) = plt.subplots(
-            2, 1, figsize=(18, max(10, len(rows_df) * 0.4 + 4)),
-            gridspec_kw={'height_ratios': [3, 1]}
-        )
-
-        # ========== 甘特图 ==========
-        y_positions = list(range(len(rows_df)))
-        y_labels = []
-        date_min = rows_df["Start"].min()
-        date_max = rows_df["Finish"].max()
-
-        for idx, (_, row) in enumerate(rows_df.iterrows()):
-            start = row["Start"]
-            finish = row["Finish"]
-            duration = (finish - start).days + 1
-            color = row["bar_color"]
-
-            # 绘制横道
-            ax_gantt.barh(idx, duration, left=mdates.date2num(start), height=0.5,
-                          color=color, edgecolor="#333", linewidth=0.5)
-
-            # Y轴标签
-            start_str = start.strftime("%Y-%m-%d")
-            finish_str = finish.strftime("%Y-%m-%d")
-            if row["row_type"] == "section":
-                label = f"{row['label']}  {start_str}~{finish_str}  {duration}d"
-            else:
-                label = f"{row['label']}  {start_str}~{finish_str}  {duration}d"
-            y_labels.append(label)
-
-            # 起止日期标注
-            ax_gantt.text(mdates.date2num(start) - 0.5, idx, start.strftime("%m/%d"),
-                          ha="right", va="center", fontsize=6, color="#555")
-            ax_gantt.text(mdates.date2num(finish) + 0.5, idx, finish.strftime("%m/%d"),
-                          ha="left", va="center", fontsize=6, color="#555")
-
-        # Y轴
-        ax_gantt.set_yticks(y_positions)
-        ax_gantt.set_yticklabels(y_labels, fontsize=8)
-        ax_gantt.invert_yaxis()
-
-        # X轴日期
-        ax_gantt.xaxis.set_major_formatter(mdates.DateFormatter("%Y年%m月%d日"))
-        ax_gantt.xaxis.set_major_locator(mdates.MonthLocator())
-        plt.setp(ax_gantt.xaxis.get_majorticklabels(), rotation=30, ha="right", fontsize=8)
-
-        ax_gantt.set_xlim(mdates.date2num(date_min) - 3, mdates.date2num(date_max) + 3)
-        ax_gantt.set_title("施工进度甘特图", fontsize=14, fontweight="bold", pad=15)
-        ax_gantt.grid(axis="x", alpha=0.3, linestyle="-")
-        ax_gantt.set_axisbelow(True)
-
-        # 里程碑
-        if show_milestones and milestones:
-            for milestone in milestones:
-                md = pd.Timestamp(milestone["date"])
-                ax_gantt.plot(mdates.date2num(md), 0, "D",
-                              color="#f39c12", markersize=8,
-                              markeredgecolor="#d68910", markeredgewidth=1.5)
-                ax_gantt.axvline(x=mdates.date2num(md), color="#f39c12",
-                                 linestyle="--", alpha=0.4, linewidth=1)
-
-        # 图例
-        legend_elements = [
-            Patch(facecolor="#000000", edgecolor="#333", label="分部大类"),
-            Patch(facecolor="#e74c3c", edgecolor="#333", label="分部小类"),
-        ]
-        if show_milestones and milestones:
-            legend_elements.append(
-                Line2D([0], [0], marker="D", color="w", markerfacecolor="#f39c12",
-                       markeredgecolor="#d68910", markersize=8, label="里程碑")
-            )
-        ax_gantt.legend(handles=legend_elements, loc="upper right", fontsize=9)
-
-        update_progress(2, 3, "正在绘制资源曲线...")
-
-        # ========== 资源曲线 ==========
-        date_range, daily_manpower, _ = calculate_daily_resources(tasks_df)
-
-        if len(date_range) > 0:
-            x_num = [mdates.date2num(d) for d in date_range]
-            ax_resource.fill_between(x_num, daily_manpower, alpha=0.3, color="#27ae60")
-            ax_resource.plot(x_num, daily_manpower, color="#27ae60", linewidth=1.5, label="人力需求")
-
-            ax_resource.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
-            ax_resource.xaxis.set_major_locator(mdates.MonthLocator())
-            plt.setp(ax_resource.xaxis.get_majorticklabels(), rotation=30, ha="right", fontsize=8)
-
-            ax_resource.set_title("资源负荷曲线（人力）", fontsize=12, pad=10)
-            ax_resource.set_xlabel("日期", fontsize=10)
-            ax_resource.set_ylabel("人力（人）", fontsize=10)
-            ax_resource.grid(axis="y", alpha=0.3, linestyle="-")
-            ax_resource.set_axisbelow(True)
-            ax_resource.legend(fontsize=9)
-
-        update_progress(3, 3, "正在保存...")
-
-        plt.tight_layout()
-
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png", dpi=150, bbox_inches="tight", facecolor="white")
-        plt.close(fig)
-
-        return buf.getvalue()
-
-    except Exception as e:
-        if progress_bar:
-            progress_bar.progress(0, text=f"失败：{str(e)}")
-        st.error(f"PNG导出失败：{str(e)}")
-        return None
-
-
 def export_gantt_html(fig):
     """
     将甘特图导出为HTML文件（无需额外依赖，跨平台通用）
@@ -1899,52 +1742,11 @@ def main():
                     key="manpower_chart"
                 )
             
-            # 3. 导出功能：支持PNG和HTML两种格式
+            # 3. 导出功能：HTML交互式图表（纯Plotly，零额外依赖，最稳妥）
             st.markdown("---")
-            col_export1, col_export2, col_export3 = st.columns([1, 1, 1])
+            col_export1, col_export2 = st.columns([1, 1])
 
             with col_export1:
-                img_key = f"png_{current_version}"
-                if img_key not in st.session_state:
-                    st.session_state[img_key] = None
-
-                # 检测 matplotlib 是否可用
-                try:
-                    import matplotlib
-                    matplotlib_available = True
-                except ImportError:
-                    matplotlib_available = False
-
-                if not matplotlib_available:
-                    st.button("🖼️ 生成PNG", key=f"btn_gen_png_{current_version}", disabled=True)
-                    st.caption("⚠️ PNG功能需安装matplotlib。请将代码推送到GitHub，Streamlit Cloud会自动安装。")
-                elif st.session_state[img_key] is None:
-                    if st.button("🖼️ 生成PNG", key=f"btn_gen_png_{current_version}"):
-                        progress_bar = st.progress(0, text="正在准备...")
-                        fig_manpower_for_export = create_manpower_curve(
-                            tasks_df[tasks_df["section_code"].isin(selected_sections)].copy()
-                            if selected_sections else tasks_df.copy()
-                        )
-                        result = export_combined_png_matplotlib(
-                            tasks_df, milestones,
-                            section_filter=selected_sections if selected_sections else None,
-                            show_milestones=show_milestones,
-                            progress_bar=progress_bar
-                        )
-                        if result:
-                            st.session_state[img_key] = result
-                            st.success("PNG生成成功！")
-                            st.rerun()
-                else:
-                    st.download_button(
-                        label="📥 下载(PNG)",
-                        data=st.session_state[img_key],
-                        file_name=f"{overview.get('project_name', '进度计划')}_进度图.png",
-                        mime="image/png",
-                        key=f"dl_png_{current_version}"
-                    )
-
-            with col_export2:
                 html_key = f"html_{current_version}"
                 if html_key not in st.session_state:
                     st.session_state[html_key] = None
@@ -2090,7 +1892,7 @@ def main():
         4. **筛选工序**：使用分部工程筛选器查看特定阶段的工序
         5. **资源详情**：在下方选择工序查看详细资源配置
         6. **版本对比**：加载多组数据后启用对比模式，查看工期偏差
-        7. **数据导出**：将甘特图导出为PNG或HTML，工序表导出为CSV
+        7. **数据导出**：将甘特图导出为HTML交互式图表，工序表导出为CSV
         """)
         
         st.markdown("### 📋 JSON数据格式要求")
