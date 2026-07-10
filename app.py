@@ -6,8 +6,6 @@
 
 import json
 import os
-import io
-import functools
 from datetime import datetime
 
 import streamlit as st
@@ -465,7 +463,6 @@ def _build_gantt_data(tasks_df, section_filter=None):
     return pd.DataFrame(ordered_rows)
 
 
-@functools.lru_cache(maxsize=512)
 def _build_resource_hover_text_cached(resources_tuple):
     """缓存版本：把 resources 元组格式化为 hover 文本"""
     if not resources_tuple:
