@@ -108,6 +108,100 @@ def get_local_json_files(directory):
     return [f for f in os.listdir(directory) if f.endswith('.json')]
 
 
+def get_history_directory():
+    """
+    获取历史文件存储目录路径
+    
+    返回:
+        历史文件目录路径
+    """
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    history_dir = os.path.join(base_dir, "uploaded_history")
+    if not os.path.exists(history_dir):
+        os.makedirs(history_dir)
+    return history_dir
+
+
+def save_uploaded_file_to_history(file_name, file_content):
+    """
+    将上传的文件保存到历史目录
+    
+    参数:
+        file_name: 文件名
+        file_content: 文件字节内容
+        
+    返回:
+        保存后的文件路径
+    """
+    history_dir = get_history_directory()
+    # 避免重名冲突：添加时间戳后缀
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    base_name = file_name.replace('.json', '')
+    new_name = f"{base_name}_{timestamp}.json"
+    save_path = os.path.join(history_dir, new_name)
+    
+    with open(save_path, 'wb') as f:
+        f.write(file_content)
+    
+    return save_path
+
+
+def get_history_json_files():
+    """
+    获取历史目录下的所有JSON文件
+    
+    返回:
+        [(文件名, 文件路径, 上传时间)] 列表
+    """
+    history_dir = get_history_directory()
+    if not os.path.exists(history_dir):
+        return []
+    
+    files = []
+    for f in os.listdir(history_dir):
+        if f.endswith('.json'):
+            file_path = os.path.join(history_dir, f)
+            # 从文件名中提取上传时间
+            parts = f.replace('.json', '').split('_')
+            if len(parts) >= 3:
+                # 格式：项目名_YYYYMMDD_HHMMSS
+                upload_time_str = f"{parts[-2]}_{parts[-1]}"
+                project_name = '_'.join(parts[:-2])
+            else:
+                upload_time_str = "未知"
+                project_name = f.replace('.json', '')
+            
+            files.append({
+                'file_name': f,
+                'file_path': file_path,
+                'project_name': project_name,
+                'upload_time': upload_time_str
+            })
+    
+    # 按上传时间倒序排列（最新的在前）
+    files.sort(key=lambda x: x['upload_time'], reverse=True)
+    return files
+
+
+def delete_history_file(file_path):
+    """
+    删除历史文件
+    
+    参数:
+        file_path: 文件路径
+        
+    返回:
+        是否成功删除
+    """
+    try:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+            return True
+        return False
+    except Exception:
+        return False
+
+
 # ==================== 数据处理模块 ====================
 
 def extract_section_from_task_id(task_id):
@@ -1240,7 +1334,7 @@ def main():
             uploaded_file = st.file_uploader(
                 "上传JSON文件",
                 type=["json"],
-                help="选择符合格式要求的施工进度JSON文件"
+                help="选择符合格式要求的施工进度JSON文件（上传后将自动保存到本地）"
             )
             
             if uploaded_file is not None:
@@ -1250,16 +1344,68 @@ def main():
                     is_valid, msg = validate_data_structure(data)
                     
                     if is_valid:
+                        # 保存到历史目录（持久化）
+                        save_path = save_uploaded_file_to_history(uploaded_file.name, file_content)
+                        
                         version_name = uploaded_file.name.replace('.json', '')
-                        if version_name not in st.session_state.data_versions:
-                            st.session_state.data_versions[version_name] = data
-                            st.success(f"成功加载：{uploaded_file.name}")
-                        else:
-                            st.info(f"已存在版本：{version_name}")
+                        # 使用文件名+时间戳作为版本名，避免冲突
+                        timestamp_suffix = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        unique_version_name = f"{version_name}_{timestamp_suffix}"
+                        
+                        st.session_state.data_versions[unique_version_name] = data
+                        st.success(f"✅ 成功加载并保存：{uploaded_file.name}")
+                        st.info(f"已保存到历史记录，下次可从历史文件中加载")
                     else:
                         st.error(msg)
                 except Exception as e:
                     st.error(f"解析失败：{str(e)}")
+        
+        # 历史文件管理
+        st.markdown("---")
+        st.subheader("📂 历史文件管理")
+        
+        history_files = get_history_json_files()
+        if history_files:
+            st.markdown(f"**共 {len(history_files)} 个历史文件**")
+            
+            # 显示历史文件列表
+            for hf in history_files:
+                with st.container():
+                    col1, col2, col3 = st.columns([3, 2, 1])
+                    with col1:
+                        st.markdown(f"📁 **{hf['project_name']}**")
+                    with col2:
+                        st.markdown(f"⏱️ {hf['upload_time']}")
+                    with col3:
+                        # 加载按钮
+                        if st.button("加载", key=f"load_{hf['file_name']}", type="primary"):
+                            try:
+                                data = load_json_from_file(hf['file_path'])
+                                is_valid, msg = validate_data_structure(data)
+                                if is_valid:
+                                    version_name = hf['project_name']
+                                    if version_name not in st.session_state.data_versions:
+                                        st.session_state.data_versions[version_name] = data
+                                        st.success(f"✅ 已加载：{hf['project_name']}")
+                                        st.rerun()
+                                    else:
+                                        st.info(f"该版本已在当前会话中")
+                                else:
+                                    st.error(f"文件格式错误：{msg}")
+                            except Exception as e:
+                                st.error(f"加载失败：{str(e)}")
+                    
+                    # 删除按钮（单独一行）
+                    if st.button("🗑️ 删除", key=f"delete_{hf['file_name']}", type="secondary"):
+                        if delete_history_file(hf['file_path']):
+                            st.success(f"已删除：{hf['project_name']}")
+                            st.rerun()
+                        else:
+                            st.error("删除失败")
+                    
+                    st.markdown("---")
+        else:
+            st.info("暂无历史文件，上传文件后将自动保存")
         
         # 版本管理
         st.markdown("---")
