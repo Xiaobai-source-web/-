@@ -941,7 +941,7 @@ def create_manpower_curve(tasks_df):
     """
     date_range, daily_manpower, daily_detail_texts = calculate_daily_resources(tasks_df)
 
-    # 把 numpy datetime64 转成 python datetime，避免 Kaleido/JSON 序列化问题
+    # 把 numpy datetime64 转成 python datetime
     x_dates = [pd.Timestamp(d).to_pydatetime() for d in date_range]
     y_vals = [int(v) for v in daily_manpower]
 
@@ -1244,63 +1244,66 @@ def render_milestones_table(milestones):
 
 # ==================== 导出功能模块 ====================
 
-def export_gantt_svg(fig):
+def export_gantt_html(fig):
     """
-    将甘特图导出为SVG图片（跨平台通用，无需Chrome）
+    将甘特图导出为HTML文件（无需Chrome，跨平台通用）
     """
     try:
-        svg_bytes = pio.to_image(
+        html_str = pio.to_html(
             fig,
-            format="svg",
-            width=1800,
-            height=1200,
+            full_html=True,
+            include_plotlyjs="cdn",
+            default_width="100%",
+            default_height="100%"
         )
-        return svg_bytes
+        return html_str.encode('utf-8')
     except Exception as e:
-        st.error(f"SVG导出失败：{str(e)}")
+        st.error(f"HTML导出失败：{str(e)}")
         return None
 
 
-def export_combined_svg(fig_gantt, fig_manpower, progress_bar=None):
+def export_combined_html(fig_gantt, fig_manpower, progress_bar=None):
     """
-    将甘特图和资源曲线合并为一个SVG图片（上下排列，跨平台通用）
+    将甘特图和资源曲线合并为一个HTML文件（上下排列，跨平台通用，无需Chrome）
     progress_bar: Streamlit progress bar 用于显示进度
     """
-    import xml.etree.ElementTree as ET
-
     def update_progress(step, total, msg):
         if progress_bar:
             progress_bar.progress(step / total, text=msg)
 
     try:
         update_progress(1, 3, "正在渲染甘特图...")
-        svg1_bytes = pio.to_image(fig_gantt, format="svg", width=1400, height=1000)
-
+        gantt_html = pio.to_html(fig_gantt, full_html=False, include_plotlyjs=False)
+        
         update_progress(2, 3, "正在渲染资源曲线...")
-        svg2_bytes = pio.to_image(fig_manpower, format="svg", width=1400, height=500)
+        manpower_html = pio.to_html(fig_manpower, full_html=False, include_plotlyjs=False)
 
-        svg1_str = svg1_bytes.decode('utf-8')
-        svg2_str = svg2_bytes.decode('utf-8')
-
-        root1 = ET.fromstring(svg1_str)
-        root2 = ET.fromstring(svg2_str)
-
-        height1 = int(root1.get('height', '1000'))
-        total_height = height1 + int(root2.get('height', '500')) + 20
-
-        root1.set('height', str(total_height))
-
-        group = ET.SubElement(root1, 'g')
-        group.set('transform', f'translate(0, {height1 + 20})')
-
-        for child in list(root2):
-            group.append(child)
-
-        ET.register_namespace('', 'http://www.w3.org/2000/svg')
-        combined_svg = ET.tostring(root1, encoding='utf-8', method='xml')
-
+        combined_html = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>施工进度计划图</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <style>
+        body {{ margin: 0; padding: 20px; background: #fff; font-family: Microsoft YaHei, sans-serif; }}
+        .chart-container {{ width: 100%; max-width: 1600px; margin: 0 auto; }}
+        .gantt-section {{ width: 100%; height: 1000px; }}
+        .manpower-section {{ width: 100%; height: 500px; margin-top: 20px; }}
+        h1 {{ text-align: center; color: #333; }}
+    </style>
+</head>
+<body>
+    <h1>施工进度计划图</h1>
+    <div class="chart-container">
+        <div class="gantt-section">{gantt_html}</div>
+        <div class="manpower-section">{manpower_html}</div>
+    </div>
+</body>
+</html>
+"""
         update_progress(3, 3, "正在保存...")
-        return combined_svg
+        return combined_html.encode('utf-8')
 
     except Exception as e:
         if progress_bar:
@@ -1732,7 +1735,7 @@ def main():
                     key="manpower_chart"
                 )
             
-            # 3. 导出功能：合并两张图为一个SVG矢量图
+            # 3. 导出功能：合并两张图为一个HTML文件（无需Chrome）
             st.markdown("---")
             col_export1, col_export2 = st.columns([1, 1])
 
@@ -1748,18 +1751,18 @@ def main():
                             tasks_df[tasks_df["section_code"].isin(selected_sections)].copy()
                             if selected_sections else tasks_df.copy()
                         )
-                        result = export_combined_svg(fig_gantt, fig_manpower_for_export, progress_bar)
+                        result = export_combined_html(fig_gantt, fig_manpower_for_export, progress_bar)
                         if result:
                             st.session_state[img_key] = result
                             st.success("图片生成成功！")
                             st.rerun()
                 else:
                     st.download_button(
-                        label="📥 下载(SVG)",
+                        label="📥 下载(HTML)",
                         data=st.session_state[img_key],
-                        file_name=f"{overview.get('project_name', '进度计划')}_进度图.svg",
-                        mime="image/svg+xml",
-                        key=f"dl_svg_{current_version}"
+                        file_name=f"{overview.get('project_name', '进度计划')}_进度图.html",
+                        mime="text/html",
+                        key=f"dl_html_{current_version}"
                     )
 
             with col_export2:
@@ -1882,7 +1885,7 @@ def main():
         4. **筛选工序**：使用分部工程筛选器查看特定阶段的工序
         5. **资源详情**：在下方选择工序查看详细资源配置
         6. **版本对比**：加载多组数据后启用对比模式，查看工期偏差
-        7. **数据导出**：将甘特图导出为SVG矢量图，工序表导出为CSV
+        7. **数据导出**：将甘特图导出为HTML（无需Chrome，跨平台通用），工序表导出为CSV
         """)
         
         st.markdown("### 📋 JSON数据格式要求")
