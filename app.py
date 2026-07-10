@@ -540,6 +540,7 @@ def create_gantt_chart(tasks_df, milestones, section_filter=None, show_milestone
 
     # 3. 固定时间竖线（如果指定了 fixed_date）
     shapes = []
+    annotations = []
     fixed_date_info = None
     
     if fixed_date is not None:
@@ -593,7 +594,6 @@ def create_gantt_chart(tasks_df, milestones, section_filter=None, show_milestone
         })
 
     # 4. 横道左右两端日期标签
-    annotations = []
     for _, row in rows_df.iterrows():
         annotations.append(dict(
             x=row["Start"], y=row["label"],
