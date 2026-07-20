@@ -1259,7 +1259,7 @@ def main():
     st.markdown("---")
     
     # 自动加载名创优品示范项目
-    demo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "名创优品施工进度计划.json")
+    demo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "名创优品.json")
     if os.path.exists(demo_path):
         if "demo_data" not in st.session_state:
             try:
